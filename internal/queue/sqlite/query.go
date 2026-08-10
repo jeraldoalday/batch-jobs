@@ -1,6 +1,11 @@
 package sqlite
 
-import "github.com/jeraldoalday/batch-jobs/internal/queue"
+import (
+	"fmt"
+
+	"github.com/jeraldoalday/batch-jobs/internal/job"
+	"github.com/jeraldoalday/batch-jobs/internal/queue"
+)
 
 var _ queue.Queue = (*Queue)(nil)
 
@@ -27,4 +32,55 @@ func (q *Queue) Close() error {
 	q.closed = true
 	q.notifyLocked()
 	return q.db.Close()
+}
+
+// List returns up to limit jobs in status, most recently updated first.
+// Unlike queue.Memory, Queue never discards terminal jobs (succeeded,
+// failed, dead), so List is how a caller inspects them after the fact —
+// e.g. a dashboard's dead-letter view.
+func (q *Queue) List(status job.Status, limit int) ([]*job.Job, error) {
+	rows, err := q.db.Query(
+		`SELECT `+jobColumns+` FROM jobs WHERE status = ? ORDER BY updated_at DESC LIMIT ?`,
+		string(status), limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list %s: %w", status, err)
+	}
+	defer rows.Close()
+
+	var jobs []*job.Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: list %s: scan: %w", status, err)
+		}
+		jobs = append(jobs, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list %s: %w", status, err)
+	}
+	return jobs, nil
+}
+
+// Stats returns the number of jobs currently in each status.
+func (q *Queue) Stats() (map[job.Status]int, error) {
+	rows, err := q.db.Query(`SELECT status, COUNT(*) FROM jobs GROUP BY status`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: stats: %w", err)
+	}
+	defer rows.Close()
+
+	stats := make(map[job.Status]int)
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, fmt.Errorf("sqlite: stats: scan: %w", err)
+		}
+		stats[job.Status(status)] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: stats: %w", err)
+	}
+	return stats, nil
 }
