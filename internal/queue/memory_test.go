@@ -255,3 +255,16 @@ func TestMemoryConcurrentEnqueueDequeue(t *testing.T) {
 		t.Fatalf("dequeued %d distinct jobs, want %d", len(seen), n)
 	}
 }
+
+// BenchmarkMemoryEnqueueDequeue is the in-process baseline that
+// sqlite.BenchmarkSQLiteEnqueueDequeue is compared against.
+func BenchmarkMemoryEnqueueDequeue(b *testing.B) {
+	q := NewMemory()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = q.Enqueue(job.New("bench", nil))
+		if _, err := q.TryDequeue(); err != nil {
+			b.Fatalf("TryDequeue: %v", err)
+		}
+	}
+}
