@@ -1,0 +1,9 @@
+/bin/
+/dist/
+*.db
+*.sqlite
+*.sqlite3
+.env
+.DS_Store
+coverage.out
+coverage.html
