@@ -9,6 +9,8 @@ import (
 	"github.com/jeraldoalday/batch-jobs/internal/schedule"
 )
 
+var _ schedule.Store = (*Store)(nil)
+
 // Create implements schedule.Store.
 func (s *Store) Create(sch *schedule.Schedule) error {
 	const insertQuery = `INSERT INTO schedules (` + scheduleColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -88,4 +90,51 @@ func scanSchedules(rows *sql.Rows) ([]*schedule.Schedule, error) {
 		return nil, err
 	}
 	return schedules, nil
+}
+
+// MarkFired implements schedule.Store.
+func (s *Store) MarkFired(id string, firedAt, next time.Time) error {
+	const query = `
+UPDATE schedules
+SET last_run_at = ?, next_run_at = ?, updated_at = ?
+WHERE id = ?;
+`
+	res, err := s.db.Exec(query, firedAt.UnixNano(), next.UnixNano(), firedAt.UnixNano(), id)
+	if err != nil {
+		return fmt.Errorf("schedule/sqlite: mark fired %s: %w", id, err)
+	}
+	return checkRowFound(res, "mark fired", id)
+}
+
+// SetEnabled implements schedule.Store.
+func (s *Store) SetEnabled(id string, enabled bool) error {
+	const query = `UPDATE schedules SET enabled = ?, updated_at = ? WHERE id = ?;`
+
+	res, err := s.db.Exec(query, boolToInt(enabled), time.Now().UTC().UnixNano(), id)
+	if err != nil {
+		return fmt.Errorf("schedule/sqlite: set enabled %s: %w", id, err)
+	}
+	return checkRowFound(res, "set enabled", id)
+}
+
+// Delete implements schedule.Store.
+func (s *Store) Delete(id string) error {
+	if _, err := s.db.Exec(`DELETE FROM schedules WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("schedule/sqlite: delete %s: %w", id, err)
+	}
+	return nil
+}
+
+// checkRowFound returns schedule.ErrNotFound if res reports that op
+// touched no rows, which for an UPDATE keyed by id means no schedule with
+// that id exists.
+func checkRowFound(res sql.Result, op, id string) error {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("schedule/sqlite: %s %s: %w", op, id, err)
+	}
+	if n == 0 {
+		return schedule.ErrNotFound
+	}
+	return nil
 }
