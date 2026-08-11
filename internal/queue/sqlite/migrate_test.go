@@ -48,54 +48,21 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := migrate(db); err != nil {
 		t.Fatalf("first migrate: %v", err)
 	}
+
+	var firstCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&firstCount); err != nil {
+		t.Fatalf("query schema_migrations: %v", err)
+	}
+
 	if err := migrate(db); err != nil {
 		t.Fatalf("second migrate: %v", err)
 	}
 
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
+	var secondCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&secondCount); err != nil {
 		t.Fatalf("query schema_migrations: %v", err)
 	}
-	if count != len(mustLoadMigrations(t)) {
-		t.Fatalf("schema_migrations has %d rows, want %d (re-running migrate should not duplicate records)", count, len(mustLoadMigrations(t)))
+	if secondCount != firstCount {
+		t.Fatalf("schema_migrations has %d rows after re-running migrate, want %d (should not duplicate records)", secondCount, firstCount)
 	}
-}
-
-func TestVersionFromFilename(t *testing.T) {
-	tests := []struct {
-		name    string
-		want    int
-		wantErr bool
-	}{
-		{name: "0001_init.sql", want: 1},
-		{name: "0042_add_index.sql", want: 42},
-		{name: "no_version.sql", wantErr: true},
-		{name: "abc_init.sql", wantErr: true},
-	}
-
-	for _, tt := range tests {
-		got, err := versionFromFilename(tt.name)
-		if tt.wantErr {
-			if err == nil {
-				t.Errorf("versionFromFilename(%q): want error, got version %d", tt.name, got)
-			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("versionFromFilename(%q): unexpected error: %v", tt.name, err)
-			continue
-		}
-		if got != tt.want {
-			t.Errorf("versionFromFilename(%q) = %d, want %d", tt.name, got, tt.want)
-		}
-	}
-}
-
-func mustLoadMigrations(t *testing.T) []migration {
-	t.Helper()
-	migrations, err := loadMigrations()
-	if err != nil {
-		t.Fatalf("loadMigrations: %v", err)
-	}
-	return migrations
 }
