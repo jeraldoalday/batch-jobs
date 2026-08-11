@@ -14,9 +14,17 @@
 - Durability tests (restart-and-recover), concurrency tests, benchmarks vs
   in-memory queue
 
-## Day 3 — Scheduling
-- Recurring/cron-style jobs
-- Scheduler loop, delayed-execution polish
+## Day 3 — Scheduling (done)
+- `internal/schedule`: hand-rolled 5-field cron parser (lists, ranges,
+  steps, wildcards) and `Cron.Next`; `Schedule` job template + `Store`
+  interface
+- `internal/schedule/sqlite`: durable `Store` implementation, sharing the
+  connection setup and migration runner extracted from Day 2's
+  `queue/sqlite` into `internal/sqlitex` / `internal/sqlitemigrate`
+- `internal/scheduler`: polling loop that enqueues due schedules' jobs and
+  advances them, mirroring `worker.Pool`'s Start/Stop shape
+- Delayed-execution polish: `worker.WithJitter` to decorrelate synchronized
+  retries
 
 ## Day 4 — Observability
 - Structured logging (`slog`)

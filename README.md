@@ -42,6 +42,43 @@ progress.
   Both backends implement the same `queue.Queue` interface, so a `worker.Pool`
   can use either interchangeably.
 
+## Scheduling
+
+`internal/schedule` adds recurring, cron-driven jobs on top of the queue: a
+`Schedule` is a job template (queue, payload, priority, retry policy) plus a
+standard 5-field cron expression (minute hour day-of-month month
+day-of-week — wildcards, lists, ranges, and `/step` are all supported).
+`internal/schedule/sqlite.Store` persists schedules the same way
+`queue/sqlite.Queue` persists jobs, and `internal/scheduler.Scheduler` is the
+loop that polls a `Store` for due schedules, enqueues each one's job onto a
+`queue.Queue`, and advances it to its next fire time:
+
+```go
+store, err := sqlitestore.Open("schedules.db")
+if err != nil {
+    log.Fatal(err)
+}
+defer store.Close()
+
+sch, err := schedule.New("reports", "0 9 * * 1-5", []byte("daily report"))
+if err != nil {
+    log.Fatal(err)
+}
+if err := store.Create(sch); err != nil {
+    log.Fatal(err)
+}
+
+s := &scheduler.Scheduler{Store: store, Queue: q}
+s.Start(ctx)
+defer s.Stop()
+```
+
+Firing a schedule enqueues its job and then advances `NextRunAt` as two
+separate steps, so it is at-least-once: a crash between the two re-fires the
+schedule on the next poll. Handlers for schedule-produced jobs should be
+idempotent, the same requirement any at-least-once queue places on handlers
+in general.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
