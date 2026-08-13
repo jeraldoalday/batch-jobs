@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jeraldoalday/batch-jobs/internal/job"
+	"github.com/jeraldoalday/batch-jobs/internal/metrics"
 	"github.com/jeraldoalday/batch-jobs/internal/queue"
 )
 
@@ -37,6 +38,11 @@ type Pool struct {
 	// Logger is used for operational logging. Defaults to slog.Default()
 	// if unset.
 	Logger *slog.Logger
+
+	// Metrics, if set, records Prometheus-compatible counters and
+	// duration histograms for each job processed. A nil Metrics (the
+	// default) disables instrumentation.
+	Metrics *metrics.Metrics
 
 	wg     sync.WaitGroup
 	cancel context.CancelFunc
@@ -88,14 +94,17 @@ func (p *Pool) loop(ctx context.Context, id int) {
 }
 
 func (p *Pool) process(ctx context.Context, j *job.Job) {
+	start := time.Now()
 	err := p.runHandler(ctx, j)
 	if err == nil {
 		j.MarkSucceeded(time.Now().UTC())
+		p.Metrics.ObserveJob(j.Queue, j.Status, time.Since(start))
 		return
 	}
 
 	backoff := p.Backoff(j.RetryCount + 1)
 	j.MarkFailed(time.Now().UTC(), err, backoff)
+	p.Metrics.ObserveJob(j.Queue, j.Status, time.Since(start))
 
 	switch j.Status {
 	case job.StatusRetrying:
