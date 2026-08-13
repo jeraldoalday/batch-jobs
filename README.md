@@ -95,11 +95,18 @@ in general.
   - `batchjobs_jobs_processed_total{queue,status}` — jobs processed, by
     queue and terminal status (`succeeded`, `retrying`, `dead`)
   - `batchjobs_job_duration_seconds{queue,status}` — handler execution time
+  - `batchjobs_jobs_in_flight{queue}` — jobs currently executing in a handler
   - `batchjobs_schedule_fires_total` / `batchjobs_schedule_errors_total` —
     schedule fire outcomes
+  - `batchjobs_scheduler_tick_duration_seconds` — time per scheduler poll
+  - `batchjobs_queue_depth{queue}` — a pull-based gauge for a `Queue`'s
+    current backlog (pending + retrying jobs), registered separately via
+    `Metrics.RegisterQueueDepth` since it reads `Queue.Len` on every scrape
+    rather than being updated as events happen
 
   ```go
   m := metrics.New(prometheus.NewRegistry())
+  m.RegisterQueueDepth("emails", q.Len)
 
   pool := &worker.Pool{Queue: q, Handler: handle, Metrics: m}
   sched := &scheduler.Scheduler{Store: store, Queue: q, Metrics: m}

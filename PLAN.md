@@ -30,9 +30,10 @@
 - Structured logging (`slog`): lifecycle (start/stop) at info level,
   per-job and per-fire outcomes at debug level, across `worker.Pool` and
   `scheduler.Scheduler`
-- `internal/metrics`: Prometheus-compatible counters/histograms for job
-  outcomes and schedule fires, wired into `Pool.Metrics` and
-  `Scheduler.Metrics` as optional (nil-safe) fields, plus a scrape
+- `internal/metrics`: Prometheus-compatible counters, histograms, and gauges
+  for job outcomes/duration/in-flight count, schedule fires/errors/tick
+  duration, and a pull-based queue depth gauge; wired into `Pool.Metrics`
+  and `Scheduler.Metrics` as optional (nil-safe) fields, plus a scrape
   `Handler()` for exposing them
 
 ## Day 5–6 — HTTP API
