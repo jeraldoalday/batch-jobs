@@ -100,7 +100,9 @@ func (p *Pool) loop(ctx context.Context, id int) {
 
 func (p *Pool) process(ctx context.Context, j *job.Job) {
 	start := time.Now()
+	p.Metrics.IncJobsInFlight(j.Queue)
 	err := p.runHandler(ctx, j)
+	p.Metrics.DecJobsInFlight(j.Queue)
 	if err == nil {
 		j.MarkSucceeded(time.Now().UTC())
 		duration := time.Since(start)

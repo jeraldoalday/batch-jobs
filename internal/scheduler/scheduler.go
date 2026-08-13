@@ -108,6 +108,9 @@ func (s *Scheduler) loop(ctx context.Context) {
 
 // tick queries the Store for due schedules and fires each one.
 func (s *Scheduler) tick() {
+	start := time.Now()
+	defer func() { s.Metrics.ObserveTick(time.Since(start)) }()
+
 	due, err := s.Store.Due(time.Now().UTC())
 	if err != nil {
 		s.Logger.Error("scheduler: failed to query due schedules", "error", err)
