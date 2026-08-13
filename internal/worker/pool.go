@@ -72,6 +72,8 @@ func (p *Pool) Start(ctx context.Context) {
 			p.loop(ctx, id)
 		}(i)
 	}
+
+	p.Logger.Info("worker: pool started", "concurrency", p.Concurrency)
 }
 
 // Stop signals all workers to stop pulling new jobs and blocks until every
@@ -81,6 +83,9 @@ func (p *Pool) Stop() {
 		p.cancel()
 	}
 	p.wg.Wait()
+	if p.Logger != nil {
+		p.Logger.Info("worker: pool stopped")
+	}
 }
 
 func (p *Pool) loop(ctx context.Context, id int) {
@@ -98,7 +103,9 @@ func (p *Pool) process(ctx context.Context, j *job.Job) {
 	err := p.runHandler(ctx, j)
 	if err == nil {
 		j.MarkSucceeded(time.Now().UTC())
-		p.Metrics.ObserveJob(j.Queue, j.Status, time.Since(start))
+		duration := time.Since(start)
+		p.Metrics.ObserveJob(j.Queue, j.Status, duration)
+		p.Logger.Debug("worker: job succeeded", "job_id", j.ID, "queue", j.Queue, "duration", duration)
 		return
 	}
 
@@ -110,6 +117,8 @@ func (p *Pool) process(ctx context.Context, j *job.Job) {
 	case job.StatusRetrying:
 		if reErr := p.Queue.Enqueue(j); reErr != nil {
 			p.Logger.Error("worker: failed to reschedule job", "job_id", j.ID, "error", reErr)
+		} else {
+			p.Logger.Debug("worker: job scheduled for retry", "job_id", j.ID, "queue", j.Queue, "attempt", j.RetryCount, "run_at", j.RunAt)
 		}
 	case job.StatusDead:
 		p.Logger.Warn("worker: job exhausted retries", "job_id", j.ID, "queue", j.Queue, "error", err)
