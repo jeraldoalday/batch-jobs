@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jeraldoalday/batch-jobs/internal/metrics"
 	"github.com/jeraldoalday/batch-jobs/internal/queue"
 	"github.com/jeraldoalday/batch-jobs/internal/schedule"
 )
@@ -42,6 +43,11 @@ type Scheduler struct {
 	// Logger is used for operational logging. Defaults to
 	// slog.Default() if unset.
 	Logger *slog.Logger
+
+	// Metrics, if set, records Prometheus-compatible counters for
+	// schedule fires and errors. A nil Metrics (the default) disables
+	// instrumentation.
+	Metrics *metrics.Metrics
 
 	wg     sync.WaitGroup
 	cancel context.CancelFunc
@@ -117,6 +123,7 @@ func (s *Scheduler) fire(sch *schedule.Schedule) {
 	next, err := sch.Advance(now)
 	if err != nil {
 		s.Logger.Error("scheduler: failed to compute next fire time; disabling schedule", "schedule_id", sch.ID, "error", err)
+		s.Metrics.IncScheduleError()
 		if disErr := s.Store.SetEnabled(sch.ID, false); disErr != nil {
 			s.Logger.Error("scheduler: failed to disable schedule", "schedule_id", sch.ID, "error", disErr)
 		}
@@ -125,10 +132,15 @@ func (s *Scheduler) fire(sch *schedule.Schedule) {
 
 	if err := s.Queue.Enqueue(sch.NewJob()); err != nil {
 		s.Logger.Error("scheduler: failed to enqueue job for schedule", "schedule_id", sch.ID, "error", err)
+		s.Metrics.IncScheduleError()
 		return
 	}
 
 	if err := s.Store.MarkFired(sch.ID, now, next); err != nil {
 		s.Logger.Error("scheduler: failed to mark schedule fired", "schedule_id", sch.ID, "error", err)
+		s.Metrics.IncScheduleError()
+		return
 	}
+
+	s.Metrics.IncScheduleFired()
 }
