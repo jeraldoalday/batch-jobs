@@ -10,10 +10,9 @@ disk-backed queue when needed.
 
 ## Status
 
-Early development. The core queue and job model are in place, with both an
-in-memory backend and a durable SQLite backend; scheduling, the HTTP API, and
-the dashboard are being built out incrementally. See commit history for
-progress.
+Early development. The core queue and job model, both storage backends,
+scheduling, and observability are in place; the HTTP API and dashboard are
+being built out incrementally. See commit history for progress.
 
 ## Goals
 
@@ -78,6 +77,35 @@ separate steps, so it is at-least-once: a crash between the two re-fires the
 schedule on the next poll. Handlers for schedule-produced jobs should be
 idempotent, the same requirement any at-least-once queue places on handlers
 in general.
+
+## Observability
+
+`worker.Pool` and `scheduler.Scheduler` each take optional `Logger` and
+`Metrics` fields; both are safe to leave unset.
+
+- `Logger` is a `*slog.Logger` (defaulting to `slog.Default()`). Lifecycle
+  events (pool/scheduler started and stopped) are logged at info level;
+  per-job outcomes and per-fire successes at debug level; failures
+  (reschedule errors, dead-lettering, disabled schedules) at warn/error
+  level.
+- `Metrics` is a `*internal/metrics.Metrics` (defaulting to `nil`, which
+  disables instrumentation — every method on a nil `*Metrics` is a no-op).
+  It records Prometheus counters and histograms:
+
+  - `batchjobs_jobs_processed_total{queue,status}` — jobs processed, by
+    queue and terminal status (`succeeded`, `retrying`, `dead`)
+  - `batchjobs_job_duration_seconds{queue,status}` — handler execution time
+  - `batchjobs_schedule_fires_total` / `batchjobs_schedule_errors_total` —
+    schedule fire outcomes
+
+  ```go
+  m := metrics.New(prometheus.NewRegistry())
+
+  pool := &worker.Pool{Queue: q, Handler: handle, Metrics: m}
+  sched := &scheduler.Scheduler{Store: store, Queue: q, Metrics: m}
+
+  http.Handle("/metrics", m.Handler())
+  ```
 
 ## License
 

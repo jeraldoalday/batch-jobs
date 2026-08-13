@@ -26,9 +26,14 @@
 - Delayed-execution polish: `worker.WithJitter` to decorrelate synchronized
   retries
 
-## Day 4 — Observability
-- Structured logging (`slog`)
-- Metrics hooks (Prometheus-compatible)
+## Day 4 — Observability (done)
+- Structured logging (`slog`): lifecycle (start/stop) at info level,
+  per-job and per-fire outcomes at debug level, across `worker.Pool` and
+  `scheduler.Scheduler`
+- `internal/metrics`: Prometheus-compatible counters/histograms for job
+  outcomes and schedule fires, wired into `Pool.Metrics` and
+  `Scheduler.Metrics` as optional (nil-safe) fields, plus a scrape
+  `Handler()` for exposing them
 
 ## Day 5–6 — HTTP API
 - REST endpoints: enqueue, status, list/cancel
