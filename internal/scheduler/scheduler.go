@@ -72,6 +72,8 @@ func (s *Scheduler) Start(ctx context.Context) {
 		defer s.wg.Done()
 		s.loop(ctx)
 	}()
+
+	s.Logger.Info("scheduler: started", "poll_interval", s.PollInterval)
 }
 
 // Stop signals the polling loop to stop and blocks until it exits, letting
@@ -81,6 +83,9 @@ func (s *Scheduler) Stop() {
 		s.cancel()
 	}
 	s.wg.Wait()
+	if s.Logger != nil {
+		s.Logger.Info("scheduler: stopped")
+	}
 }
 
 func (s *Scheduler) loop(ctx context.Context) {
@@ -143,4 +148,5 @@ func (s *Scheduler) fire(sch *schedule.Schedule) {
 	}
 
 	s.Metrics.IncScheduleFired()
+	s.Logger.Debug("scheduler: fired schedule", "schedule_id", sch.ID, "queue", sch.Queue, "next_run_at", next)
 }
