@@ -24,9 +24,11 @@ type Metrics struct {
 
 	jobsProcessed *prometheus.CounterVec
 	jobDuration   *prometheus.HistogramVec
+	jobsInFlight  *prometheus.GaugeVec
 
 	scheduleFires  prometheus.Counter
 	scheduleErrors prometheus.Counter
+	tickDuration   prometheus.Histogram
 }
 
 // New creates a Metrics collector and registers its collectors on reg.
@@ -47,6 +49,11 @@ func New(reg *prometheus.Registry) *Metrics {
 			Help:      "Time spent in a job's handler, labeled by queue and outcome status.",
 			Buckets:   prometheus.DefBuckets,
 		}, []string{"queue", "status"}),
+		jobsInFlight: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "jobs_in_flight",
+			Help:      "Number of jobs currently executing in a handler, labeled by queue.",
+		}, []string{"queue"}),
 		scheduleFires: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "schedule_fires_total",
@@ -57,8 +64,14 @@ func New(reg *prometheus.Registry) *Metrics {
 			Name:      "schedule_errors_total",
 			Help:      "Total number of errors encountered while firing a due schedule.",
 		}),
+		tickDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "scheduler_tick_duration_seconds",
+			Help:      "Time spent per scheduler poll, querying and firing all due schedules.",
+			Buckets:   prometheus.DefBuckets,
+		}),
 	}
-	reg.MustRegister(m.jobsProcessed, m.jobDuration, m.scheduleFires, m.scheduleErrors)
+	reg.MustRegister(m.jobsProcessed, m.jobDuration, m.jobsInFlight, m.scheduleFires, m.scheduleErrors, m.tickDuration)
 	return m
 }
 
