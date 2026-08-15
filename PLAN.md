@@ -36,10 +36,21 @@
   and `Scheduler.Metrics` as optional (nil-safe) fields, plus a scrape
   `Handler()` for exposing them
 
-## Day 5–6 — HTTP API
-- REST endpoints: enqueue, status, list/cancel
-- Middleware (auth stub, rate limiting)
-- Integration tests, OpenAPI spec
+## Day 5–6 — HTTP API (done)
+- `internal/api`: `Store` interface (`Enqueue`/`Get`/`List`/`Cancel`/`Stats`)
+  satisfied by `queue/sqlite.Queue`, plus new `Queue.Get` and `Queue.Cancel`
+  methods (and a `job.StatusCancelled` lifecycle state) added to support it
+- REST endpoints: `POST /v1/jobs` (enqueue), `GET /v1/jobs/{id}` (status),
+  `GET /v1/jobs?status=&limit=` (list), `POST /v1/jobs/{id}/cancel`,
+  `GET /v1/stats`, `GET /healthz`, optional `GET /metrics`
+- Middleware: static `X-API-Key` auth stub (off by default, always exempts
+  `/healthz`), a hand-rolled per-client-IP token-bucket rate limiter, and
+  request logging
+- `cmd/batch-jobs-server`: standalone binary wiring the API to a SQLite
+  queue, manually verified end to end with curl
+- Handler unit tests (fake in-memory `Store`) plus sqlite-backed
+  integration tests served over a real `httptest.Server`; OpenAPI spec at
+  `docs/openapi.yaml`
 
 ## Day 7–8 — Dashboard
 - Minimal web UI: job/queue views

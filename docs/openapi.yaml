@@ -1,0 +1,285 @@
+openapi: 3.0.3
+info:
+  title: batch-jobs HTTP API
+  description: >
+    REST API for enqueueing, inspecting, listing, and cancelling jobs, backed
+    by a queue/sqlite.Queue (or any internal/api.Store implementation).
+  version: "1.0.0"
+servers:
+  - url: http://localhost:8080
+security:
+  - ApiKeyAuth: []
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      description: Always returns 200 once the process is serving. Exempt from auth.
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /metrics:
+    get:
+      summary: Prometheus scrape endpoint
+      description: Present only when the server is configured with a Metrics collector.
+      responses:
+        "200":
+          description: Metrics in Prometheus text exposition format
+          content:
+            text/plain:
+              schema:
+                type: string
+  /v1/jobs:
+    post:
+      summary: Enqueue a job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnqueueRequest"
+      responses:
+        "201":
+          description: Job created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    get:
+      summary: List jobs by status
+      parameters:
+        - name: status
+          in: query
+          required: true
+          description: One of pending, running, succeeded, failed, retrying, dead, cancelled.
+          schema:
+            $ref: "#/components/schemas/Status"
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of jobs to return. Defaults to 50, capped at 500.
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Matching jobs, most recently updated first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/jobs/{id}:
+    get:
+      summary: Get a job by ID
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      responses:
+        "200":
+          description: The job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/jobs/{id}/cancel:
+    post:
+      summary: Cancel a pending or retrying job
+      description: >
+        Only jobs in status pending or retrying can be cancelled. A job
+        already claimed by a worker, or already in a terminal state, returns
+        409.
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      responses:
+        "204":
+          description: Job cancelled
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Job exists but is not cancelable in its current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/stats:
+    get:
+      summary: Job counts by status
+      responses:
+        "200":
+          description: Number of jobs currently in each status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                    example:
+                      pending: 3
+                      succeeded: 128
+                      dead: 1
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >
+        Required only when the server is started with -auth-token (or
+        Server.AuthToken is set). Disabled by default.
+  parameters:
+    JobID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    Status:
+      type: string
+      enum:
+        - pending
+        - running
+        - succeeded
+        - failed
+        - retrying
+        - dead
+        - cancelled
+    Priority:
+      type: integer
+      enum: [-1, 0, 1]
+      description: -1 = low, 0 = normal, 1 = high
+    Job:
+      type: object
+      properties:
+        id:
+          type: string
+        queue:
+          type: string
+        payload:
+          type: string
+          format: byte
+          description: Base64-encoded opaque payload.
+        status:
+          $ref: "#/components/schemas/Status"
+        priority:
+          $ref: "#/components/schemas/Priority"
+        max_retries:
+          type: integer
+        retry_count:
+          type: integer
+        last_error:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        run_at:
+          type: string
+          format: date-time
+    EnqueueRequest:
+      type: object
+      required: [queue]
+      properties:
+        queue:
+          type: string
+        payload:
+          type: string
+          format: byte
+        priority:
+          $ref: "#/components/schemas/Priority"
+        max_retries:
+          type: integer
+          minimum: 0
+        delay_seconds:
+          type: integer
+          minimum: 0
+          description: Delays the job's earliest eligible run time by this many seconds.
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+  responses:
+    BadRequest:
+      description: Malformed or invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing or invalid X-API-Key
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: No job with the given ID
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: Rate limit exceeded for this client IP
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalServerError:
+      description: Unexpected server-side error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

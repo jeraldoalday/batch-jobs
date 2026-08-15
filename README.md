@@ -11,8 +11,8 @@ disk-backed queue when needed.
 ## Status
 
 Early development. The core queue and job model, both storage backends,
-scheduling, and observability are in place; the HTTP API and dashboard are
-being built out incrementally. See commit history for progress.
+scheduling, observability, and a first HTTP API are in place; the dashboard
+is being built out incrementally. See commit history for progress.
 
 ## Goals
 
@@ -113,6 +113,43 @@ in general.
 
   http.Handle("/metrics", m.Handler())
   ```
+
+## HTTP API
+
+`internal/api.Server` exposes a `Store` (a superset of `queue.Queue` that
+adds `Get`/`List`/`Cancel`/`Stats` — `queue/sqlite.Queue` satisfies it
+directly) over REST:
+
+| Method | Path                   | Description                        |
+| ------ | ---------------------- | ----------------------------------- |
+| POST   | `/v1/jobs`              | Enqueue a job                      |
+| GET    | `/v1/jobs/{id}`         | Get a job by ID                    |
+| GET    | `/v1/jobs?status=&limit=` | List jobs by status              |
+| POST   | `/v1/jobs/{id}/cancel`  | Cancel a pending/retrying job      |
+| GET    | `/v1/stats`             | Job counts by status               |
+| GET    | `/healthz`              | Liveness probe (never requires auth) |
+| GET    | `/metrics`              | Prometheus scrape, if `Metrics` is set |
+
+```go
+srv := &api.Server{
+    Store:     sqliteQueue,
+    Metrics:   m,
+    AuthToken: os.Getenv("BATCH_JOBS_API_TOKEN"), // empty disables auth
+    RateLimit: api.RateLimit{RPS: 10, Burst: 20},   // zero value disables
+}
+http.ListenAndServe(":8080", srv.Handler())
+```
+
+Auth is a static `X-API-Key` header check, and rate limiting is a small
+hand-rolled per-client-IP token bucket — both are stubs meant as a starting
+point, not a production-grade auth/throttling layer. The full contract is
+documented in [`docs/openapi.yaml`](./docs/openapi.yaml). A standalone
+binary wiring this up against a SQLite-backed queue lives in
+`cmd/batch-jobs-server`:
+
+```sh
+go run ./cmd/batch-jobs-server -addr :8080 -db jobs.db
+```
 
 ## License
 
