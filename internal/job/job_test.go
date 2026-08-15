@@ -170,7 +170,7 @@ func TestMarkFailedExhausted(t *testing.T) {
 }
 
 func TestStatusTerminal(t *testing.T) {
-	terminal := []Status{StatusSucceeded, StatusFailed, StatusDead}
+	terminal := []Status{StatusSucceeded, StatusFailed, StatusDead, StatusCancelled}
 	nonTerminal := []Status{StatusPending, StatusRunning, StatusRetrying}
 
 	for _, s := range terminal {
