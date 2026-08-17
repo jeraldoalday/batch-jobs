@@ -64,6 +64,27 @@ func TestWithRunAt(t *testing.T) {
 	}
 }
 
+func TestWithTimeout(t *testing.T) {
+	j := New("q", nil, WithTimeout(30*time.Second))
+	if j.Timeout != 30*time.Second {
+		t.Errorf("Timeout = %v, want %v", j.Timeout, 30*time.Second)
+	}
+}
+
+func TestWithTimeoutZeroByDefault(t *testing.T) {
+	j := New("q", nil)
+	if j.Timeout != 0 {
+		t.Errorf("Timeout = %v, want 0", j.Timeout)
+	}
+}
+
+func TestWithIdempotencyKey(t *testing.T) {
+	j := New("q", nil, WithIdempotencyKey("order-123"))
+	if j.IdempotencyKey != "order-123" {
+		t.Errorf("IdempotencyKey = %q, want %q", j.IdempotencyKey, "order-123")
+	}
+}
+
 func TestReady(t *testing.T) {
 	now := time.Now().UTC()
 
@@ -166,6 +187,26 @@ func TestMarkFailedExhausted(t *testing.T) {
 	}
 	if j.RetryCount != 1 {
 		t.Errorf("RetryCount = %d, want unchanged 1", j.RetryCount)
+	}
+}
+
+func TestMarkFailedPermanently(t *testing.T) {
+	j := New("q", nil, WithMaxRetries(5))
+	now := j.CreatedAt.Add(time.Second)
+
+	j.MarkFailedPermanently(now, errors.New("malformed payload"))
+
+	if j.Status != StatusFailed {
+		t.Errorf("Status = %q, want %q", j.Status, StatusFailed)
+	}
+	if j.LastError != "malformed payload" {
+		t.Errorf("LastError = %q, want %q", j.LastError, "malformed payload")
+	}
+	if j.RetryCount != 0 {
+		t.Errorf("RetryCount = %d, want unchanged 0", j.RetryCount)
+	}
+	if !j.UpdatedAt.Equal(now) {
+		t.Errorf("UpdatedAt = %v, want %v", j.UpdatedAt, now)
 	}
 }
 

@@ -59,6 +59,20 @@ type Job struct {
 	// dequeued. Jobs enqueued without a delay have RunAt equal to
 	// CreatedAt.
 	RunAt time.Time
+
+	// Timeout bounds how long a single execution attempt may run before
+	// the worker cancels its context. Zero means no per-job timeout is
+	// applied, and the handler runs until it returns or the pool's own
+	// context is cancelled.
+	Timeout time.Duration
+
+	// IdempotencyKey, if non-empty, lets a producer safely retry an
+	// Enqueue call (e.g. after a network error) without risking a
+	// duplicate job: a Queue that supports idempotency keys treats a
+	// second Enqueue with the same (Queue, IdempotencyKey) pair as a
+	// no-op that returns the original job's state rather than creating a
+	// new row. Uniqueness is scoped to Queue, not global.
+	IdempotencyKey string
 }
 
 // Option configures a Job at construction time.
@@ -83,6 +97,20 @@ func WithDelay(d time.Duration) Option {
 // WithRunAt schedules the job to become eligible for execution at t.
 func WithRunAt(t time.Time) Option {
 	return func(j *Job) { j.RunAt = t }
+}
+
+// WithTimeout bounds each execution attempt to d, after which the worker
+// running the job cancels its context. A zero or negative d leaves the job
+// with no per-attempt timeout.
+func WithTimeout(d time.Duration) Option {
+	return func(j *Job) { j.Timeout = d }
+}
+
+// WithIdempotencyKey sets the job's idempotency key, so a Queue that
+// supports deduplication treats a repeated Enqueue with the same key (within
+// the same Queue) as a no-op rather than creating a duplicate job.
+func WithIdempotencyKey(key string) Option {
+	return func(j *Job) { j.IdempotencyKey = key }
 }
 
 // New creates a new Job for the given queue with the given payload, applying
@@ -143,4 +171,16 @@ func (j *Job) MarkFailed(now time.Time, err error, backoff time.Duration) {
 	} else {
 		j.Status = StatusDead
 	}
+}
+
+// MarkFailedPermanently records err as the job's last error and transitions
+// it directly to StatusFailed, skipping any remaining retries. Unlike
+// MarkFailed, it never schedules another attempt: it is for handlers that
+// know an error can never succeed on retry (e.g. a malformed payload) and
+// want to say so explicitly, distinct from StatusDead's "retries were
+// attempted and exhausted."
+func (j *Job) MarkFailedPermanently(now time.Time, err error) {
+	j.LastError = err.Error()
+	j.UpdatedAt = now
+	j.Status = StatusFailed
 }
