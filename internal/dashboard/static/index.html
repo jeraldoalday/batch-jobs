@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>batch-jobs</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>batch-jobs</h1>
+  <span id="conn-badge" class="badge badge-muted">connecting&hellip;</span>
+</header>
+
+<main>
+  <section id="stats" class="stat-grid" aria-label="Queue summary"></section>
+
+  <section class="panel">
+    <div class="toolbar">
+      <label class="field">
+        <span>Status</span>
+        <select id="status-filter">
+          <option value="pending">pending</option>
+          <option value="running">running</option>
+          <option value="retrying">retrying</option>
+          <option value="succeeded">succeeded</option>
+          <option value="failed">failed</option>
+          <option value="dead">dead</option>
+          <option value="cancelled">cancelled</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Limit</span>
+        <input id="limit-input" type="number" min="1" max="500" value="50">
+      </label>
+      <button id="refresh-btn" type="button">Refresh</button>
+      <span id="jobs-error" class="error" role="alert"></span>
+    </div>
+
+    <div class="table-wrap">
+      <table id="jobs-table">
+        <thead>
+          <tr>
+            <th scope="col">Status</th>
+            <th scope="col">ID</th>
+            <th scope="col">Queue</th>
+            <th scope="col">Priority</th>
+            <th scope="col">Retries</th>
+            <th scope="col">Updated</th>
+            <th scope="col">Last error</th>
+            <th scope="col"></th>
+          </tr>
+        </thead>
+        <tbody id="jobs-body">
+          <tr class="empty-row"><td colspan="8">Loading&hellip;</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
