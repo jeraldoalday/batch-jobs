@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -51,6 +52,47 @@ func BenchmarkSQLiteEnqueueDequeueInMemory(b *testing.B) {
 			b.Fatalf("TryDequeue: %v", err)
 		}
 	}
+}
+
+// BenchmarkSQLiteEnqueueIdempotencyKey measures the overhead the
+// idempotency-key fast path (a SELECT before the INSERT) adds over a plain
+// Enqueue, both for the common case where every key is new and for the
+// dedupe case where every Enqueue after the first is a no-op.
+func BenchmarkSQLiteEnqueueIdempotencyKey(b *testing.B) {
+	b.Run("UniqueKeys", func(b *testing.B) {
+		q, err := Open("file:" + b.Name() + "?mode=memory&cache=shared")
+		if err != nil {
+			b.Fatalf("Open: %v", err)
+		}
+		defer q.Close()
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			key := fmt.Sprintf("key-%d", i)
+			if err := q.Enqueue(job.New("bench", nil, job.WithIdempotencyKey(key))); err != nil {
+				b.Fatalf("Enqueue: %v", err)
+			}
+		}
+	})
+
+	b.Run("SameKeyDeduped", func(b *testing.B) {
+		q, err := Open("file:" + b.Name() + "?mode=memory&cache=shared")
+		if err != nil {
+			b.Fatalf("Open: %v", err)
+		}
+		defer q.Close()
+
+		if err := q.Enqueue(job.New("bench", nil, job.WithIdempotencyKey("shared"))); err != nil {
+			b.Fatalf("seed Enqueue: %v", err)
+		}
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			if err := q.Enqueue(job.New("bench", nil, job.WithIdempotencyKey("shared"))); err != nil {
+				b.Fatalf("Enqueue: %v", err)
+			}
+		}
+	})
 }
 
 // BenchmarkSQLiteConcurrentEnqueueDequeue measures throughput under
