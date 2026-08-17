@@ -3,6 +3,7 @@ package sqlite
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jeraldoalday/batch-jobs/internal/job"
 	"github.com/jeraldoalday/batch-jobs/internal/queue"
@@ -77,6 +78,7 @@ func TestSQLiteEnqueuePreservesFields(t *testing.T) {
 	want := job.New("reports", []byte("payload"),
 		job.WithPriority(job.PriorityHigh),
 		job.WithMaxRetries(3),
+		job.WithTimeout(30*time.Second),
 	)
 	if err := q.Enqueue(want); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -101,6 +103,9 @@ func TestSQLiteEnqueuePreservesFields(t *testing.T) {
 	}
 	if got.MaxRetries != want.MaxRetries {
 		t.Errorf("MaxRetries = %d, want %d", got.MaxRetries, want.MaxRetries)
+	}
+	if got.Timeout != want.Timeout {
+		t.Errorf("Timeout = %v, want %v", got.Timeout, want.Timeout)
 	}
 	if !got.CreatedAt.Equal(want.CreatedAt) {
 		t.Errorf("CreatedAt = %v, want %v", got.CreatedAt, want.CreatedAt)
