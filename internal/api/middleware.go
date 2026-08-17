@@ -40,6 +40,18 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// Flush forwards to the underlying ResponseWriter's http.Flusher, if it has
+// one, so streaming handlers (e.g. Server-Sent Events) still work when
+// wrapped by withLogging. Without this, a type assertion for http.Flusher
+// on the wrapped writer would always fail, since embedding the
+// http.ResponseWriter interface only promotes the methods that interface
+// declares.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // withLogging logs each request's method, path, status, and duration at
 // debug level once the handler has returned.
 func (s *Server) withLogging(next http.Handler) http.Handler {
