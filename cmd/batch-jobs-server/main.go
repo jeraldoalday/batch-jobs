@@ -5,11 +5,16 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -27,6 +32,7 @@ func main() {
 	rateBurst := flag.Int("rate-burst", 20, "burst size for per-client rate limiting")
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn, or error")
 	enableDashboard := flag.Bool("dashboard", true, "serve the web dashboard at /")
+	shutdownTimeout := flag.Duration("shutdown-timeout", 10*time.Second, "how long to wait for in-flight requests to finish on SIGINT/SIGTERM before forcing shutdown")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parseLevel(*logLevel)}))
@@ -55,11 +61,36 @@ func main() {
 		srv.Assets = dashboard.FS
 	}
 
-	logger.Info("batch-jobs-server: listening", "addr", *addr, "db", *dbPath)
-	if err := http.ListenAndServe(*addr, srv.Handler()); err != nil {
-		logger.Error("server exited", "error", err)
-		os.Exit(1)
+	httpSrv := &http.Server{Addr: *addr, Handler: srv.Handler()}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	serveErr := make(chan error, 1)
+	go func() {
+		logger.Info("batch-jobs-server: listening", "addr", *addr, "db", *dbPath)
+		serveErr <- httpSrv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("server exited", "error", err)
+			os.Exit(1)
+		}
+	case <-ctx.Done():
+		stop()
+		logger.Info("batch-jobs-server: shutting down", "timeout", *shutdownTimeout)
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), *shutdownTimeout)
+		defer cancel()
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+			logger.Error("graceful shutdown failed, forcing close", "error", err)
+			httpSrv.Close()
+		}
 	}
+
+	logger.Info("batch-jobs-server: stopped")
 }
 
 func parseLevel(s string) slog.Level {
