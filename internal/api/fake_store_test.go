@@ -40,6 +40,16 @@ func (f *fakeStore) Enqueue(j *job.Job) error {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if j.IdempotencyKey != "" {
+		for _, existing := range f.jobs {
+			if existing.Queue == j.Queue && existing.IdempotencyKey == j.IdempotencyKey {
+				*j = *existing
+				return nil
+			}
+		}
+	}
+
 	f.jobs[j.ID] = j
 	return nil
 }
