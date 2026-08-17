@@ -15,7 +15,7 @@ type scanner interface {
 // jobColumns is the column list, in order, used by every SELECT and
 // RETURNING clause that produces a full job row. Keeping it in one place
 // keeps scanJob in sync with the queries that feed it.
-const jobColumns = "id, queue, payload, status, priority, max_retries, retry_count, last_error, created_at, updated_at, run_at"
+const jobColumns = "id, queue, payload, status, priority, max_retries, retry_count, last_error, created_at, updated_at, run_at, timeout_ns, idempotency_key"
 
 // scanJob reads one row in the jobColumns order into a *job.Job.
 func scanJob(s scanner) (*job.Job, error) {
@@ -25,6 +25,7 @@ func scanJob(s scanner) (*job.Job, error) {
 		createdAt int64
 		updatedAt int64
 		runAt     int64
+		timeoutNs int64
 	)
 
 	if err := s.Scan(
@@ -39,6 +40,8 @@ func scanJob(s scanner) (*job.Job, error) {
 		&createdAt,
 		&updatedAt,
 		&runAt,
+		&timeoutNs,
+		&j.IdempotencyKey,
 	); err != nil {
 		return nil, err
 	}
@@ -47,6 +50,7 @@ func scanJob(s scanner) (*job.Job, error) {
 	j.CreatedAt = time.Unix(0, createdAt).UTC()
 	j.UpdatedAt = time.Unix(0, updatedAt).UTC()
 	j.RunAt = time.Unix(0, runAt).UTC()
+	j.Timeout = time.Duration(timeoutNs)
 	return &j, nil
 }
 
@@ -65,5 +69,7 @@ func insertArgs(j *job.Job) []any {
 		j.CreatedAt.UnixNano(),
 		j.UpdatedAt.UnixNano(),
 		j.RunAt.UnixNano(),
+		int64(j.Timeout),
+		j.IdempotencyKey,
 	}
 }
