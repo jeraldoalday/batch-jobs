@@ -10,33 +10,37 @@ import (
 // marshals as a base64 string, matching how encoding/json already treats
 // []byte fields.
 type JobDTO struct {
-	ID         string    `json:"id"`
-	Queue      string    `json:"queue"`
-	Payload    []byte    `json:"payload,omitempty"`
-	Status     string    `json:"status"`
-	Priority   int       `json:"priority"`
-	MaxRetries int       `json:"max_retries"`
-	RetryCount int       `json:"retry_count"`
-	LastError  string    `json:"last_error,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	RunAt      time.Time `json:"run_at"`
+	ID             string    `json:"id"`
+	Queue          string    `json:"queue"`
+	Payload        []byte    `json:"payload,omitempty"`
+	Status         string    `json:"status"`
+	Priority       int       `json:"priority"`
+	MaxRetries     int       `json:"max_retries"`
+	RetryCount     int       `json:"retry_count"`
+	LastError      string    `json:"last_error,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	RunAt          time.Time `json:"run_at"`
+	TimeoutSeconds int       `json:"timeout_seconds,omitempty"`
+	IdempotencyKey string    `json:"idempotency_key,omitempty"`
 }
 
 // toDTO converts a job.Job to its JSON representation.
 func toDTO(j *job.Job) JobDTO {
 	return JobDTO{
-		ID:         j.ID,
-		Queue:      j.Queue,
-		Payload:    j.Payload,
-		Status:     string(j.Status),
-		Priority:   int(j.Priority),
-		MaxRetries: j.MaxRetries,
-		RetryCount: j.RetryCount,
-		LastError:  j.LastError,
-		CreatedAt:  j.CreatedAt,
-		UpdatedAt:  j.UpdatedAt,
-		RunAt:      j.RunAt,
+		ID:             j.ID,
+		Queue:          j.Queue,
+		Payload:        j.Payload,
+		Status:         string(j.Status),
+		Priority:       int(j.Priority),
+		MaxRetries:     j.MaxRetries,
+		RetryCount:     j.RetryCount,
+		LastError:      j.LastError,
+		CreatedAt:      j.CreatedAt,
+		UpdatedAt:      j.UpdatedAt,
+		RunAt:          j.RunAt,
+		TimeoutSeconds: int(j.Timeout / time.Second),
+		IdempotencyKey: j.IdempotencyKey,
 	}
 }
 

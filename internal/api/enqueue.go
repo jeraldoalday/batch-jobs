@@ -27,6 +27,17 @@ type EnqueueRequest struct {
 	// DelaySeconds delays the job's earliest eligible run time by this
 	// many seconds from now. Defaults to 0 (immediately eligible).
 	DelaySeconds int `json:"delay_seconds,omitempty"`
+
+	// TimeoutSeconds bounds how long a single execution attempt may run
+	// before the worker processing it cancels its context. Defaults to 0
+	// (no per-attempt timeout).
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+
+	// IdempotencyKey, if set, lets a caller safely retry this request
+	// (e.g. after a network error) without risking a duplicate job: a
+	// second request with the same (Queue, IdempotencyKey) pair returns
+	// the original job instead of creating a new one.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 // handleEnqueue handles POST /v1/jobs.
@@ -60,17 +71,38 @@ func (s *Server) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "delay_seconds must be >= 0")
 		return
 	}
+	if req.TimeoutSeconds < 0 {
+		writeError(w, http.StatusBadRequest, "timeout_seconds must be >= 0")
+		return
+	}
 
 	opts := []job.Option{job.WithPriority(priority), job.WithMaxRetries(req.MaxRetries)}
 	if req.DelaySeconds > 0 {
 		opts = append(opts, job.WithDelay(time.Duration(req.DelaySeconds)*time.Second))
 	}
+	if req.TimeoutSeconds > 0 {
+		opts = append(opts, job.WithTimeout(time.Duration(req.TimeoutSeconds)*time.Second))
+	}
+	if req.IdempotencyKey != "" {
+		opts = append(opts, job.WithIdempotencyKey(req.IdempotencyKey))
+	}
 	j := job.New(req.Queue, req.Payload, opts...)
+	newID := j.ID
 
 	if err := s.Store.Enqueue(j); err != nil {
 		s.Logger.Error("api: enqueue failed", "queue", req.Queue, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to enqueue job")
 		return
 	}
-	writeJSON(w, http.StatusCreated, toDTO(j))
+
+	// A Store that supports idempotency keys leaves j.ID unchanged from
+	// newID when it inserted a new job, but rewrites *j to an existing
+	// job's fields (including a different ID) when this request's key
+	// duplicated one already on file. Report that case as 200 with the
+	// original job rather than 201, since nothing new was created.
+	status := http.StatusCreated
+	if j.ID != newID {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, toDTO(j))
 }
