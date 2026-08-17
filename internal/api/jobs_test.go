@@ -153,3 +153,52 @@ func TestHandleCancelJobNotCancelable(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
 	}
 }
+
+func TestHandleRetryJobSuccess(t *testing.T) {
+	store := newFakeStore()
+	j := job.New("q", nil)
+	j.Status = job.StatusDead
+	j.RetryCount = 3
+	j.LastError = "boom"
+	store.jobs[j.ID] = j
+	h := (&Server{Store: store}).Handler()
+
+	rec := doJSON(t, h, http.MethodPost, "/v1/jobs/"+j.ID+"/retry", nil)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusNoContent, rec.Body)
+	}
+	got := store.jobs[j.ID]
+	if got.Status != job.StatusPending {
+		t.Errorf("Status = %q, want %q", got.Status, job.StatusPending)
+	}
+	if got.RetryCount != 0 {
+		t.Errorf("RetryCount = %d, want 0", got.RetryCount)
+	}
+	if got.LastError != "" {
+		t.Errorf("LastError = %q, want empty", got.LastError)
+	}
+}
+
+func TestHandleRetryJobNotFound(t *testing.T) {
+	h := (&Server{Store: newFakeStore()}).Handler()
+
+	rec := doJSON(t, h, http.MethodPost, "/v1/jobs/nope/retry", nil)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleRetryJobNotRetryable(t *testing.T) {
+	store := newFakeStore()
+	j := job.New("q", nil)
+	store.jobs[j.ID] = j
+	h := (&Server{Store: store}).Handler()
+
+	rec := doJSON(t, h, http.MethodPost, "/v1/jobs/"+j.ID+"/retry", nil)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
+	}
+}
