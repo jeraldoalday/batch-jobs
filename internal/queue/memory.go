@@ -20,11 +20,34 @@ type Memory struct {
 	// changed is closed and replaced under mu whenever the queue's state
 	// changes in a way that might unblock a waiting Dequeue call.
 	changed chan struct{}
+	// waiting indexes, by dedupeKey, every job currently sitting in ready
+	// or delayed that was enqueued with a non-empty IdempotencyKey. It
+	// exists so Enqueue can detect a duplicate before it is claimed by a
+	// worker; entries are removed the moment a job is dequeued (Memory
+	// keeps no record of jobs once a worker has claimed them, so dedupe
+	// against in-flight or terminal jobs is out of scope here — see
+	// queue/sqlite.Queue for dedupe that persists across a job's full
+	// lifecycle).
+	waiting map[string]*job.Job
 }
 
 // NewMemory returns an empty, ready-to-use in-memory queue.
 func NewMemory() *Memory {
-	return &Memory{changed: make(chan struct{})}
+	return &Memory{changed: make(chan struct{}), waiting: make(map[string]*job.Job)}
+}
+
+// dedupeKey scopes an idempotency key to the job's queue, matching
+// queue/sqlite.Queue's (queue, idempotency_key) uniqueness scope.
+func dedupeKey(j *job.Job) string {
+	return j.Queue + "\x00" + j.IdempotencyKey
+}
+
+// removeWaitingLocked drops j from the waiting index once it has been
+// claimed by a worker. Callers must hold q.mu.
+func (q *Memory) removeWaitingLocked(j *job.Job) {
+	if j.IdempotencyKey != "" {
+		delete(q.waiting, dedupeKey(j))
+	}
 }
 
 var _ Queue = (*Memory)(nil)
@@ -43,7 +66,10 @@ func (q *Memory) promoteLocked(now time.Time) {
 	}
 }
 
-// Enqueue implements Queue.
+// Enqueue implements Queue. If j has a non-empty IdempotencyKey and another
+// job with the same (Queue, IdempotencyKey) pair is currently waiting
+// (ready or delayed, not yet claimed by a worker), Enqueue does not add a
+// new entry: it copies that job's fields into *j and returns nil.
 func (q *Memory) Enqueue(j *job.Job) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -52,10 +78,20 @@ func (q *Memory) Enqueue(j *job.Job) error {
 		return ErrClosed
 	}
 
+	if j.IdempotencyKey != "" {
+		if existing, ok := q.waiting[dedupeKey(j)]; ok {
+			*j = *existing
+			return nil
+		}
+	}
+
 	if !j.RunAt.After(time.Now().UTC()) {
 		heap.Push(&q.ready, j)
 	} else {
 		heap.Push(&q.delayed, j)
+	}
+	if j.IdempotencyKey != "" {
+		q.waiting[dedupeKey(j)] = j
 	}
 	q.broadcastLocked()
 	return nil
@@ -77,6 +113,7 @@ func (q *Memory) TryDequeue() (*job.Job, error) {
 	}
 
 	j := heap.Pop(&q.ready).(*job.Job)
+	q.removeWaitingLocked(j)
 	j.MarkRunning(now)
 	return j, nil
 }
@@ -90,6 +127,7 @@ func (q *Memory) Dequeue(ctx context.Context) (*job.Job, error) {
 
 		if q.ready.Len() > 0 {
 			j := heap.Pop(&q.ready).(*job.Job)
+			q.removeWaitingLocked(j)
 			j.MarkRunning(now)
 			q.mu.Unlock()
 			return j, nil
