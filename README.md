@@ -85,6 +85,8 @@ in general.
   calling the handler, so a well-behaved handler that respects `ctx.Done()`
   is actually interrupted rather than left to run indefinitely. Persisted by
   `queue/sqlite.Queue` and exposed as `timeout_seconds` over the HTTP API.
+  `schedule.WithTimeout(d)` applies the same bound to every job a recurring
+  schedule produces.
 - **Permanent failures.** Most handler errors are transient and go through
   the normal retry/backoff/dead-letter path, but some errors (a malformed
   payload, for example) can never succeed on retry. Wrapping one with
