@@ -3,6 +3,7 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/jeraldoalday/batch-jobs/internal/metrics"
 )
@@ -45,6 +46,10 @@ type Server struct {
 
 	// ListMaxLimit overrides DefaultListMaxLimit.
 	ListMaxLimit int
+
+	// EventInterval overrides DefaultEventInterval, the push cadence of
+	// GET /v1/events.
+	EventInterval time.Duration
 }
 
 // Handler builds the routed, middleware-wrapped http.Handler for the
@@ -68,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/jobs/{id}/cancel", s.handleCancelJob)
 	mux.HandleFunc("POST /v1/jobs/{id}/retry", s.handleRetryJob)
 	mux.HandleFunc("GET /v1/stats", s.handleStats)
+	mux.HandleFunc("GET /v1/events", s.handleEvents)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	if s.Metrics != nil {
 		if h := s.Metrics.Handler(); h != nil {
