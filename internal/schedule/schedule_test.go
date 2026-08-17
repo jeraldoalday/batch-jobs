@@ -61,6 +61,16 @@ func TestNewAppliesOptions(t *testing.T) {
 	}
 }
 
+func TestNewAppliesTimeout(t *testing.T) {
+	s, err := New("q", "* * * * *", nil, WithTimeout(30*time.Second))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if s.Timeout != 30*time.Second {
+		t.Errorf("Timeout = %v, want %v", s.Timeout, 30*time.Second)
+	}
+}
+
 func TestNewRejectsInvalidCron(t *testing.T) {
 	if _, err := New("q", "not a cron expr", nil); err == nil {
 		t.Fatal("New: want error for invalid cron expression")
@@ -77,6 +87,7 @@ func TestNewJobPropagatesFields(t *testing.T) {
 	s, err := New("reports", "* * * * *", []byte("payload"),
 		WithPriority(job.PriorityHigh),
 		WithMaxRetries(3),
+		WithTimeout(45*time.Second),
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -94,6 +105,9 @@ func TestNewJobPropagatesFields(t *testing.T) {
 	}
 	if j.MaxRetries != s.MaxRetries {
 		t.Errorf("MaxRetries = %d, want %d", j.MaxRetries, s.MaxRetries)
+	}
+	if j.Timeout != s.Timeout {
+		t.Errorf("Timeout = %v, want %v", j.Timeout, s.Timeout)
 	}
 	if j.Status != job.StatusPending {
 		t.Errorf("Status = %q, want %q", j.Status, job.StatusPending)

@@ -32,7 +32,11 @@ func mustNewSchedule(t *testing.T, opts ...schedule.Option) *schedule.Schedule {
 
 func TestCreateAndGetRoundTrip(t *testing.T) {
 	s := openTestStore(t)
-	want := mustNewSchedule(t, schedule.WithPriority(job.PriorityHigh), schedule.WithMaxRetries(4))
+	want := mustNewSchedule(t,
+		schedule.WithPriority(job.PriorityHigh),
+		schedule.WithMaxRetries(4),
+		schedule.WithTimeout(30*time.Second),
+	)
 
 	if err := s.Create(want); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -57,6 +61,9 @@ func TestCreateAndGetRoundTrip(t *testing.T) {
 	}
 	if got.MaxRetries != want.MaxRetries {
 		t.Errorf("MaxRetries = %d, want %d", got.MaxRetries, want.MaxRetries)
+	}
+	if got.Timeout != want.Timeout {
+		t.Errorf("Timeout = %v, want %v", got.Timeout, want.Timeout)
 	}
 	if got.CronExpr != want.CronExpr {
 		t.Errorf("CronExpr = %q, want %q", got.CronExpr, want.CronExpr)
