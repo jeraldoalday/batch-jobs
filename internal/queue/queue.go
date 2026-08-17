@@ -24,6 +24,10 @@ var ErrNotFound = errors.New("queue: job not found")
 // cancelable state (already running or already terminal).
 var ErrNotCancelable = errors.New("queue: job not cancelable")
 
+// ErrNotRetryable is returned by Retry when the job exists but is not in a
+// retryable state (anything other than dead or failed).
+var ErrNotRetryable = errors.New("queue: job not retryable")
+
 // Queue is the interface workers and producers use to exchange jobs. A Queue
 // implementation is responsible for ordering ready jobs by priority and
 // respecting each job's scheduled RunAt time.
