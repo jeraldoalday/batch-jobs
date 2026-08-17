@@ -14,6 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/jeraldoalday/batch-jobs/internal/api"
+	"github.com/jeraldoalday/batch-jobs/internal/dashboard"
 	"github.com/jeraldoalday/batch-jobs/internal/metrics"
 	"github.com/jeraldoalday/batch-jobs/internal/queue/sqlite"
 )
@@ -25,6 +26,7 @@ func main() {
 	rateRPS := flag.Float64("rate-rps", 0, "requests per second allowed per client IP (0 disables rate limiting)")
 	rateBurst := flag.Int("rate-burst", 20, "burst size for per-client rate limiting")
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn, or error")
+	enableDashboard := flag.Bool("dashboard", true, "serve the web dashboard at /")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parseLevel(*logLevel)}))
@@ -48,6 +50,9 @@ func main() {
 		Metrics:   m,
 		AuthToken: *authToken,
 		RateLimit: api.RateLimit{RPS: *rateRPS, Burst: *rateBurst},
+	}
+	if *enableDashboard {
+		srv.Assets = dashboard.FS
 	}
 
 	logger.Info("batch-jobs-server: listening", "addr", *addr, "db", *dbPath)
