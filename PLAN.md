@@ -52,9 +52,20 @@
   integration tests served over a real `httptest.Server`; OpenAPI spec at
   `docs/openapi.yaml`
 
-## Day 7–8 — Dashboard
-- Minimal web UI: job/queue views
-- Live updates (SSE/polling), retry/cancel actions
+## Day 7–8 — Dashboard (done)
+- `internal/dashboard`: embedded static web UI (`go:embed`), no build step —
+  stat tiles for the per-status job-count breakdown and a status-filterable
+  job table
+- `internal/queue/sqlite.Queue.Retry` and `POST /v1/jobs/{id}/retry`: resets
+  a dead/failed job back to pending, clearing retry count and last error
+- `GET /v1/events`: Server-Sent Events stream of live `/v1/stats` snapshots,
+  powering the dashboard's stat tiles without polling; job table polls
+  `/v1/jobs` every 5s and both paths expose cancel/retry actions
+- `api.Server.Assets` (optional `fs.FS`) mounts static files at `/` behind
+  the API's own routes; wired into `cmd/batch-jobs-server` by default
+  (`-dashboard=false` to disable)
+- Bug fix: logging middleware's `statusRecorder` now forwards `Flush()`, so
+  streaming handlers work when wrapped by `withLogging`
 
 ## Day 9 — Reliability
 - Graceful shutdown

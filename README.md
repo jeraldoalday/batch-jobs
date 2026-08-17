@@ -126,9 +126,12 @@ directly) over REST:
 | GET    | `/v1/jobs/{id}`         | Get a job by ID                    |
 | GET    | `/v1/jobs?status=&limit=` | List jobs by status              |
 | POST   | `/v1/jobs/{id}/cancel`  | Cancel a pending/retrying job      |
+| POST   | `/v1/jobs/{id}/retry`   | Retry a dead/failed job             |
 | GET    | `/v1/stats`             | Job counts by status               |
+| GET    | `/v1/events`            | SSE stream of live stats           |
 | GET    | `/healthz`              | Liveness probe (never requires auth) |
 | GET    | `/metrics`              | Prometheus scrape, if `Metrics` is set |
+| GET    | `/`                     | Dashboard, if `Assets` is set       |
 
 ```go
 srv := &api.Server{
@@ -150,6 +153,22 @@ binary wiring this up against a SQLite-backed queue lives in
 ```sh
 go run ./cmd/batch-jobs-server -addr :8080 -db jobs.db
 ```
+
+## Dashboard
+
+`internal/dashboard` embeds a minimal web UI — stat tiles for the job-count
+breakdown, and a status-filterable job table with cancel/retry actions — as a
+static asset tree with no build step. Mount it on a `Server` by setting
+`Assets`:
+
+```go
+srv := &api.Server{Store: sqliteQueue, Assets: dashboard.FS}
+```
+
+`cmd/batch-jobs-server` does this by default; pass `-dashboard=false` to
+disable it. Stat tiles update live over `/v1/events` (Server-Sent Events),
+falling back to polling `/v1/stats` every 5s if the connection drops; the job
+table itself polls `/v1/jobs` on the same interval.
 
 ## License
 

@@ -2,8 +2,9 @@ openapi: 3.0.3
 info:
   title: batch-jobs HTTP API
   description: >
-    REST API for enqueueing, inspecting, listing, and cancelling jobs, backed
-    by a queue/sqlite.Queue (or any internal/api.Store implementation).
+    REST API for enqueueing, inspecting, listing, cancelling, and retrying
+    jobs, backed by a queue/sqlite.Queue (or any internal/api.Store
+    implementation).
   version: "1.0.0"
 servers:
   - url: http://localhost:8080
@@ -143,6 +144,56 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalServerError"
+  /v1/jobs/{id}/retry:
+    post:
+      summary: Retry a dead or failed job
+      description: >
+        Only jobs in status dead or failed can be retried. Retrying resets
+        retry_count to 0, clears last_error, and moves the job back to
+        pending with run_at reset to now. Any other status returns 409.
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      responses:
+        "204":
+          description: Job reset to pending
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Job exists but is not retryable in its current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/events:
+    get:
+      summary: Live job-count stats via Server-Sent Events
+      description: >
+        Streams a StatsResponse-shaped `data:` frame on connect and again
+        every EventInterval (default 2s) until the client disconnects.
+        Powers the dashboard's live-updating stat tiles without polling.
+      responses:
+        "200":
+          description: text/event-stream of StatsResponse JSON frames
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          description: Streaming unsupported by the underlying ResponseWriter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/stats:
     get:
       summary: Job counts by status
