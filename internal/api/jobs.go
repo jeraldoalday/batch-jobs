@@ -82,3 +82,21 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to cancel job")
 	}
 }
+
+// handleRetryJob handles POST /v1/jobs/{id}/retry.
+func (s *Server) handleRetryJob(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	err := s.Store.Retry(id)
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, queue.ErrNotFound):
+		writeError(w, http.StatusNotFound, "job not found")
+	case errors.Is(err, queue.ErrNotRetryable):
+		writeError(w, http.StatusConflict, "job is not retryable in its current state")
+	default:
+		s.Logger.Error("api: retry job failed", "job_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retry job")
+	}
+}

@@ -91,6 +91,23 @@ func (f *fakeStore) Cancel(id string) error {
 	return nil
 }
 
+func (f *fakeStore) Retry(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	j, ok := f.jobs[id]
+	if !ok {
+		return queue.ErrNotFound
+	}
+	if j.Status != job.StatusDead && j.Status != job.StatusFailed {
+		return queue.ErrNotRetryable
+	}
+	j.Status = job.StatusPending
+	j.RetryCount = 0
+	j.LastError = ""
+	return nil
+}
+
 func (f *fakeStore) Stats() (map[job.Status]int, error) {
 	if f.statsErr != nil {
 		return nil, f.statsErr

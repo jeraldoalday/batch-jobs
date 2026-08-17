@@ -26,6 +26,12 @@ type Store interface {
 	// if it exists but isn't pending or retrying.
 	Cancel(id string) error
 
+	// Retry resets the job with the given ID back to pending, clearing its
+	// retry count and last error. It returns queue.ErrNotFound if the job
+	// doesn't exist and queue.ErrNotRetryable if it exists but isn't dead
+	// or failed.
+	Retry(id string) error
+
 	// Stats returns the number of jobs currently in each status.
 	Stats() (map[job.Status]int, error)
 }

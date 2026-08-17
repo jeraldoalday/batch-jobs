@@ -66,6 +66,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/jobs/{id}", s.handleGetJob)
 	mux.HandleFunc("GET /v1/jobs", s.handleListJobs)
 	mux.HandleFunc("POST /v1/jobs/{id}/cancel", s.handleCancelJob)
+	mux.HandleFunc("POST /v1/jobs/{id}/retry", s.handleRetryJob)
 	mux.HandleFunc("GET /v1/stats", s.handleStats)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	if s.Metrics != nil {
