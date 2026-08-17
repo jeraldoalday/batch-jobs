@@ -1,6 +1,7 @@
 package api
 
 import (
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"time"
@@ -50,6 +51,11 @@ type Server struct {
 	// EventInterval overrides DefaultEventInterval, the push cadence of
 	// GET /v1/events.
 	EventInterval time.Duration
+
+	// Assets, if set, is served as static files at "/" (e.g. dashboard.FS),
+	// falling in behind the API's own routes. A nil Assets (the default)
+	// leaves "/" unmounted, returning 404.
+	Assets fs.FS
 }
 
 // Handler builds the routed, middleware-wrapped http.Handler for the
@@ -79,6 +85,9 @@ func (s *Server) Handler() http.Handler {
 		if h := s.Metrics.Handler(); h != nil {
 			mux.Handle("GET /metrics", h)
 		}
+	}
+	if s.Assets != nil {
+		mux.Handle("/", http.FileServerFS(s.Assets))
 	}
 
 	var h http.Handler = mux
