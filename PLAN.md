@@ -67,10 +67,26 @@
 - Bug fix: logging middleware's `statusRecorder` now forwards `Flush()`, so
   streaming handlers work when wrapped by `withLogging`
 
-## Day 9 — Reliability
-- Graceful shutdown
-- Job timeouts / context cancellation
-- Idempotency keys
+## Day 9 — Reliability (done)
+- `job.Timeout` / `job.WithTimeout`: `worker.Pool` derives a per-attempt
+  `context.WithTimeout` from it, so a handler that respects `ctx.Done()` is
+  actually interrupted rather than left to run indefinitely; persisted by
+  `queue/sqlite.Queue` (migration 0002) and exposed as `timeout_seconds`
+  over the HTTP API
+- `worker.Permanent(err)`: lets a handler mark an error non-retryable,
+  transitioning the job straight to `StatusFailed` and skipping both retry
+  scheduling and dead-lettering — the first code path that actually
+  produces `StatusFailed`, previously unreachable
+- `job.IdempotencyKey` / `job.WithIdempotencyKey`: both `queue.Memory` and
+  `queue/sqlite.Queue` dedupe a repeated `Enqueue` for the same `(Queue,
+  IdempotencyKey)` pair into the original job rather than creating a
+  duplicate — a unique index for `queue/sqlite.Queue` (durable, race-safe
+  across concurrent writers), a waiting-jobs index scoped to not-yet-claimed
+  jobs for `queue.Memory`; exposed as `idempotency_key` over the HTTP API,
+  with `POST /v1/jobs` responding 200 (not 201) on a dedupe
+- Graceful shutdown for `cmd/batch-jobs-server`: SIGINT/SIGTERM triggers
+  `http.Server.Shutdown` with a configurable `-shutdown-timeout` (default
+  10s) instead of the process dying mid-request
 
 ## Day 10 — Scaling
 - Multi-queue/priority routing

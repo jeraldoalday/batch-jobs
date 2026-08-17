@@ -78,6 +78,32 @@ schedule on the next poll. Handlers for schedule-produced jobs should be
 idempotent, the same requirement any at-least-once queue places on handlers
 in general.
 
+## Reliability
+
+- **Per-job timeouts.** `job.WithTimeout(d)` bounds a single execution
+  attempt: `worker.Pool` derives a `context.WithTimeout` from it before
+  calling the handler, so a well-behaved handler that respects `ctx.Done()`
+  is actually interrupted rather than left to run indefinitely. Persisted by
+  `queue/sqlite.Queue` and exposed as `timeout_seconds` over the HTTP API.
+- **Permanent failures.** Most handler errors are transient and go through
+  the normal retry/backoff/dead-letter path, but some errors (a malformed
+  payload, for example) can never succeed on retry. Wrapping one with
+  `worker.Permanent(err)` marks the job `StatusFailed` immediately, skipping
+  both retry scheduling and dead-lettering.
+- **Idempotency keys.** `job.WithIdempotencyKey(key)` lets a producer safely
+  retry an `Enqueue` call (e.g. after a network error) without risking a
+  duplicate: both `queue.Memory` and `queue/sqlite.Queue` treat a second
+  `Enqueue` with the same `(Queue, IdempotencyKey)` pair as a no-op that
+  copies the original job's state into the caller's `*job.Job` instead of
+  creating a new one. `queue/sqlite.Queue` enforces this with a database
+  unique index, so it holds even across process restarts and concurrent
+  writers; `queue.Memory` scopes it to jobs still waiting (not yet claimed by
+  a worker), since it keeps no record of a job once dequeued.
+- **Graceful shutdown.** `cmd/batch-jobs-server` listens for SIGINT/SIGTERM
+  and calls `http.Server.Shutdown`, giving in-flight requests up to
+  `-shutdown-timeout` (default 10s) to finish before the listener is forced
+  closed.
+
 ## Observability
 
 `worker.Pool` and `scheduler.Scheduler` each take optional `Logger` and
@@ -122,7 +148,7 @@ directly) over REST:
 
 | Method | Path                   | Description                        |
 | ------ | ---------------------- | ----------------------------------- |
-| POST   | `/v1/jobs`              | Enqueue a job                      |
+| POST   | `/v1/jobs`              | Enqueue a job (200 instead of 201 if `idempotency_key` deduped it) |
 | GET    | `/v1/jobs/{id}`         | Get a job by ID                    |
 | GET    | `/v1/jobs?status=&limit=` | List jobs by status              |
 | POST   | `/v1/jobs/{id}/cancel`  | Cancel a pending/retrying job      |

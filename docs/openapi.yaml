@@ -54,6 +54,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Job"
+        "200":
+          description: >
+            idempotency_key matched an existing job for the same queue; the
+            existing job is returned unchanged and no new job was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -280,6 +288,17 @@ components:
         run_at:
           type: string
           format: date-time
+        timeout_seconds:
+          type: integer
+          description: >
+            Bounds how long a single execution attempt may run before the
+            worker cancels its context. 0 means no per-attempt timeout.
+        idempotency_key:
+          type: string
+          description: >
+            Opaque caller-supplied key. A repeated Enqueue with the same
+            (queue, idempotency_key) pair returns this job instead of
+            creating a duplicate.
     EnqueueRequest:
       type: object
       required: [queue]
@@ -298,6 +317,19 @@ components:
           type: integer
           minimum: 0
           description: Delays the job's earliest eligible run time by this many seconds.
+        timeout_seconds:
+          type: integer
+          minimum: 0
+          description: >
+            Bounds how long a single execution attempt may run. 0 (the
+            default) means no per-attempt timeout.
+        idempotency_key:
+          type: string
+          description: >
+            Opaque key scoping this request's dedupe: a repeated request
+            with the same (queue, idempotency_key) pair is a no-op that
+            returns the original job (200) instead of creating a new one
+            (201).
     Error:
       type: object
       properties:
