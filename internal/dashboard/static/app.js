@@ -84,6 +84,20 @@
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
   }
 
+  // idMeta builds the small secondary line under a job's ID showing its
+  // timeout and/or idempotency key, when set, or null if neither applies.
+  function idMeta(job) {
+    const parts = [];
+    if (job.timeout_seconds) parts.push(`timeout ${job.timeout_seconds}s`);
+    if (job.idempotency_key) parts.push(`key: ${job.idempotency_key}`);
+    if (parts.length === 0) return null;
+
+    const meta = document.createElement("div");
+    meta.className = "id-meta";
+    meta.textContent = parts.join(" · ");
+    return meta;
+  }
+
   function renderJobs(jobs) {
     if (!jobs || jobs.length === 0) {
       const row = document.createElement("tr");
@@ -106,7 +120,9 @@
         const idCell = document.createElement("td");
         idCell.className = "id-cell";
         idCell.title = job.id;
-        idCell.textContent = job.id;
+        idCell.append(document.createTextNode(job.id));
+        const meta = idMeta(job);
+        if (meta) idCell.append(meta);
 
         const queueCell = document.createElement("td");
         queueCell.textContent = job.queue;
