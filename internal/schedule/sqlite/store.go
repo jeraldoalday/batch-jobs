@@ -13,7 +13,7 @@ var _ schedule.Store = (*Store)(nil)
 
 // Create implements schedule.Store.
 func (s *Store) Create(sch *schedule.Schedule) error {
-	const insertQuery = `INSERT INTO schedules (` + scheduleColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	const insertQuery = `INSERT INTO schedules (` + scheduleColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	if _, err := s.db.Exec(insertQuery, insertArgs(sch)...); err != nil {
 		return fmt.Errorf("schedule/sqlite: create %s: %w", sch.ID, err)

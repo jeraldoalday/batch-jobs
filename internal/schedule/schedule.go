@@ -35,6 +35,11 @@ type Schedule struct {
 	// MaxRetries is applied to every job.Job this schedule produces.
 	MaxRetries int
 
+	// Timeout is applied to every job.Job this schedule produces, bounding
+	// how long a single execution attempt may run. Zero means no
+	// per-attempt timeout, the same default job.New itself uses.
+	Timeout time.Duration
+
 	// CronExpr is the 5-field cron expression controlling when this
 	// schedule fires. See ParseCron for the supported syntax.
 	CronExpr string
@@ -70,6 +75,12 @@ func WithPriority(p job.Priority) Option {
 // schedule produces.
 func WithMaxRetries(n int) Option {
 	return func(s *Schedule) { s.MaxRetries = n }
+}
+
+// WithTimeout sets the per-attempt execution timeout applied to every job
+// the schedule produces.
+func WithTimeout(d time.Duration) Option {
+	return func(s *Schedule) { s.Timeout = d }
 }
 
 // New creates a Schedule that enqueues payload onto queueName each time
@@ -109,6 +120,7 @@ func (s *Schedule) NewJob() *job.Job {
 	return job.New(s.Queue, s.Payload,
 		job.WithPriority(s.Priority),
 		job.WithMaxRetries(s.MaxRetries),
+		job.WithTimeout(s.Timeout),
 	)
 }
 

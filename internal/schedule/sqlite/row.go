@@ -17,7 +17,7 @@ type scanner interface {
 // scheduleColumns is the column list, in order, used by every SELECT that
 // produces a full schedule row. Keeping it in one place keeps scanSchedule
 // in sync with the queries that feed it.
-const scheduleColumns = "id, queue, payload, priority, max_retries, cron_expr, enabled, next_run_at, last_run_at, created_at, updated_at"
+const scheduleColumns = "id, queue, payload, priority, max_retries, cron_expr, enabled, next_run_at, last_run_at, created_at, updated_at, timeout_ns"
 
 // scanSchedule reads one row in the scheduleColumns order into a
 // *schedule.Schedule.
@@ -30,6 +30,7 @@ func scanSchedule(s scanner) (*schedule.Schedule, error) {
 		lastRunAt sql.NullInt64
 		createdAt int64
 		updatedAt int64
+		timeoutNs int64
 	)
 
 	if err := s.Scan(
@@ -44,6 +45,7 @@ func scanSchedule(s scanner) (*schedule.Schedule, error) {
 		&lastRunAt,
 		&createdAt,
 		&updatedAt,
+		&timeoutNs,
 	); err != nil {
 		return nil, err
 	}
@@ -56,6 +58,7 @@ func scanSchedule(s scanner) (*schedule.Schedule, error) {
 	}
 	sch.CreatedAt = time.Unix(0, createdAt).UTC()
 	sch.UpdatedAt = time.Unix(0, updatedAt).UTC()
+	sch.Timeout = time.Duration(timeoutNs)
 	return &sch, nil
 }
 
@@ -79,6 +82,7 @@ func insertArgs(s *schedule.Schedule) []any {
 		lastRunAt,
 		s.CreatedAt.UnixNano(),
 		s.UpdatedAt.UnixNano(),
+		int64(s.Timeout),
 	}
 }
 
