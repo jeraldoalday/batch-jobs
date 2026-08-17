@@ -101,13 +101,22 @@ func (p *Pool) loop(ctx context.Context, id int) {
 func (p *Pool) process(ctx context.Context, j *job.Job) {
 	start := time.Now()
 	p.Metrics.IncJobsInFlight(j.Queue)
-	err := p.runHandler(ctx, j)
+	attemptCtx, cancel := p.attemptContext(ctx, j)
+	err := p.runHandler(attemptCtx, j)
+	cancel()
 	p.Metrics.DecJobsInFlight(j.Queue)
 	if err == nil {
 		j.MarkSucceeded(time.Now().UTC())
 		duration := time.Since(start)
 		p.Metrics.ObserveJob(j.Queue, j.Status, duration)
 		p.Logger.Debug("worker: job succeeded", "job_id", j.ID, "queue", j.Queue, "duration", duration)
+		return
+	}
+
+	if isPermanent(err) {
+		j.MarkFailedPermanently(time.Now().UTC(), err)
+		p.Metrics.ObserveJob(j.Queue, j.Status, time.Since(start))
+		p.Logger.Warn("worker: job failed permanently", "job_id", j.ID, "queue", j.Queue, "error", err)
 		return
 	}
 
@@ -131,6 +140,18 @@ func (p *Pool) process(ctx context.Context, j *job.Job) {
 			}
 		}
 	}
+}
+
+// attemptContext returns the context to run j's handler with, applying j's
+// per-attempt Timeout on top of ctx when one is set, plus a cancel func the
+// caller must invoke once the attempt finishes (whether or not the timeout
+// was reached) to release the timer. When Timeout is unset, cancel is a
+// no-op and ctx is returned unchanged.
+func (p *Pool) attemptContext(ctx context.Context, j *job.Job) (context.Context, context.CancelFunc) {
+	if j.Timeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, j.Timeout)
 }
 
 // runHandler invokes the handler, converting a panic into an error so a
