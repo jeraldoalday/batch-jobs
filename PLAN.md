@@ -88,9 +88,25 @@
   `http.Server.Shutdown` with a configurable `-shutdown-timeout` (default
   10s) instead of the process dying mid-request
 
-## Day 10 — Scaling
-- Multi-queue/priority routing
-- Dynamic worker pool sizing, backpressure
+## Day 10 — Scaling (done)
+- `queue.Router`: a `Queue` that fans `Enqueue` out by job queue name and
+  fans `Dequeue` back in across its routes in weighted round-robin order,
+  so one `worker.Pool` can serve several logical queues with tunable
+  shares; `WithDefaultRoute` catch-all, `ErrNoRoute` otherwise
+- `queue/sqlite.Queue.Bind(name)`: a view of the durable queue restricted
+  to one logical queue, so every route can share a single database file,
+  schema, and connection pool
+- Dynamic pool sizing: `worker.Policy`/`worker.Scaler` (target = busy
+  workers + backlog/JobsPerWorker, clamped to `[Min, Max]`; immediate
+  growth, hysteretic one-at-a-time shrink) driven by an autoscaler
+  goroutine that `Pool.Scale.Max` enables. Workers get a separate context
+  for `Dequeue` so retiring one never cancels the job it is running
+- Backpressure: `queue.WithCapacity` bounds `Memory` and returns
+  `queue.ErrFull` (retries and dead letters bypass the check, since they
+  were already admitted); `POST /v1/jobs` maps it to `503` +
+  `Retry-After`
+- `batchjobs_pool_workers` and `batchjobs_pool_scale_events_total`
+  metrics; router fan-out/sweep benchmarks
 
 ## Day 11 — Persistence hardening
 - Crash recovery tests

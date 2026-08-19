@@ -11,8 +11,9 @@ disk-backed queue when needed.
 ## Status
 
 Early development. The core queue and job model, both storage backends,
-scheduling, observability, and a first HTTP API are in place; the dashboard
-is being built out incrementally. See commit history for progress.
+scheduling, observability, an HTTP API, a dashboard, and the first scaling
+controls (multi-queue routing, pool autoscaling, backpressure) are in
+place. See commit history for progress.
 
 ## Goals
 
@@ -106,6 +107,113 @@ in general.
   `-shutdown-timeout` (default 10s) to finish before the listener is forced
   closed.
 
+## Scaling
+
+Three things stop a queue from keeping up: work arriving faster than the
+backlog can absorb, a pool sized for the wrong load, and one busy queue
+crowding out every other one. Each has a knob.
+
+### Multi-queue routing
+
+`queue.Router` is a `Queue` that fans `Enqueue` out to a backing queue per
+logical queue name and fans `Dequeue` back in across all of them, so a
+single `worker.Pool` can serve several queues without either splitting into
+one pool per queue or letting the busiest producer monopolise a shared one.
+
+Each route carries a `Weight`: the number of jobs it may serve in a row
+before the router moves on. A weight is a share, not a cap — an idle
+sibling never stops a busy route from using the whole pool.
+
+```go
+r, err := queue.NewRouter([]queue.Route{
+    {Name: "payments", Queue: payments, Weight: 3},
+    {Name: "emails", Queue: emails, Weight: 1},
+})
+if err != nil {
+    log.Fatal(err)
+}
+pool := &worker.Pool{Queue: r, Handler: handle}
+```
+
+While both queues are busy this alternates three payments to one email;
+when payments is empty, emails takes every worker. A job whose queue name
+matches no route is `ErrNoRoute`, unless `queue.WithDefaultRoute(q)`
+supplies a catch-all. `Close` shuts down the router only: the backing
+queues belong to whoever created them.
+
+With the SQLite backend, `Queue.Bind(name)` returns a view restricted to one
+logical queue — it claims and counts only that queue's jobs — so every route
+can share one database file, one schema, and one connection pool:
+
+```go
+q, err := sqlite.Open("jobs.db")
+if err != nil {
+    log.Fatal(err)
+}
+defer q.Close()
+
+r, err := queue.NewRouter([]queue.Route{
+    {Name: "payments", Queue: q.Bind("payments"), Weight: 3},
+    {Name: "emails", Queue: q.Bind("emails"), Weight: 1},
+})
+```
+
+### Dynamic pool sizing
+
+A fixed `Concurrency` means paying for peak capacity all day or watching a
+backlog build during a burst. Setting `Pool.Scale.Max` enables autoscaling:
+the pool samples its own workload every `ScaleInterval` (default 1s) and
+resizes itself within `[Min, Max]`.
+
+```go
+pool := &worker.Pool{
+    Queue:       q,
+    Handler:     handle,
+    Concurrency: 2, // starting size, clamped into [Min, Max]
+    Scale: worker.Policy{
+        Min:            2,
+        Max:            32,
+        JobsPerWorker:  10, // one extra worker per 10 waiting jobs
+        ScaleDownAfter: 3,  // idle samples before retiring a worker
+    },
+}
+```
+
+The target size is every busy worker plus enough additional workers to cover
+the backlog at `JobsPerWorker` each. Growth is applied immediately — a
+backlog is work already waiting — while shrinking retires one worker per
+decision and only after `ScaleDownAfter` consecutive samples agree the pool
+is oversized, so a bursty workload does not thrash goroutines up and down.
+
+Retiring a worker stops it pulling new jobs but never cancels the job in its
+hands: each worker's `Dequeue` runs under its own context, separate from the
+pool-wide context handlers run under. `Max` is deliberately required rather
+than inferred, since pool concurrency is what decides how hard handlers hit
+whatever they talk to.
+
+`Pool.Workers()` and `Pool.Busy()` report the current numbers, and the pool
+exports `batchjobs_pool_workers` and `batchjobs_pool_scale_events_total`
+(labeled `up`/`down`) when `Metrics` is set.
+
+### Backpressure
+
+An unbounded in-memory queue turns a producer that outruns its workers into
+an out-of-memory crash. `queue.NewMemory(queue.WithCapacity(n))` bounds the
+backlog, returning `queue.ErrFull` once it is reached:
+
+```go
+q := queue.NewMemory(queue.WithCapacity(10_000))
+```
+
+Admission control applies only to newly submitted jobs. A retry coming back
+around, or a job being dead-lettered, was already admitted and counted once,
+so it is always let through — a bounded queue can exceed its capacity
+briefly, by at most the number of jobs in flight, rather than dropping work
+it already accepted. Over HTTP, `POST /v1/jobs` answers a full queue with
+`503` and a `Retry-After` header (configurable via `Server.RetryAfter`)
+instead of `500`, since the request was well-formed and will likely succeed
+once the backlog drains.
+
 ## Observability
 
 `worker.Pool` and `scheduler.Scheduler` each take optional `Logger` and
@@ -124,6 +232,9 @@ in general.
     queue and terminal status (`succeeded`, `retrying`, `dead`)
   - `batchjobs_job_duration_seconds{queue,status}` — handler execution time
   - `batchjobs_jobs_in_flight{queue}` — jobs currently executing in a handler
+  - `batchjobs_pool_workers{pool}` — worker goroutines currently running
+  - `batchjobs_pool_scale_events_total{pool,direction}` — autoscaling
+    decisions applied, by direction (`up`, `down`)
   - `batchjobs_schedule_fires_total` / `batchjobs_schedule_errors_total` —
     schedule fire outcomes
   - `batchjobs_scheduler_tick_duration_seconds` — time per scheduler poll
