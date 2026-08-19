@@ -29,12 +29,24 @@ type Memory struct {
 	// queue/sqlite.Queue for dedupe that persists across a job's full
 	// lifecycle).
 	waiting map[string]*job.Job
+	// capacity, when positive, is the maximum number of newly submitted
+	// jobs the queue will hold before Enqueue starts returning ErrFull.
+	// Zero means unbounded.
+	capacity int
 }
 
-// NewMemory returns an empty, ready-to-use in-memory queue.
-func NewMemory() *Memory {
-	return &Memory{changed: make(chan struct{}), waiting: make(map[string]*job.Job)}
+// NewMemory returns an empty, ready-to-use in-memory queue, configured by
+// any options (e.g. WithCapacity to bound it).
+func NewMemory(opts ...MemoryOption) *Memory {
+	q := &Memory{changed: make(chan struct{}), waiting: make(map[string]*job.Job)}
+	for _, opt := range opts {
+		opt(q)
+	}
+	return q
 }
+
+// Cap returns the queue's capacity, or 0 if it is unbounded.
+func (q *Memory) Cap() int { return q.capacity }
 
 // dedupeKey scopes an idempotency key to the job's queue, matching
 // queue/sqlite.Queue's (queue, idempotency_key) uniqueness scope.
@@ -70,6 +82,10 @@ func (q *Memory) promoteLocked(now time.Time) {
 // job with the same (Queue, IdempotencyKey) pair is currently waiting
 // (ready or delayed, not yet claimed by a worker), Enqueue does not add a
 // new entry: it copies that job's fields into *j and returns nil.
+//
+// On a queue constructed WithCapacity, Enqueue returns ErrFull once that
+// many jobs are already waiting. Deduplicated and already-admitted jobs
+// (retries, dead letters) bypass the check, since neither adds new work.
 func (q *Memory) Enqueue(j *job.Job) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -83,6 +99,10 @@ func (q *Memory) Enqueue(j *job.Job) error {
 			*j = *existing
 			return nil
 		}
+	}
+
+	if q.capacity > 0 && admits(j) && q.ready.Len()+q.delayed.Len() >= q.capacity {
+		return ErrFull
 	}
 
 	if !j.RunAt.After(time.Now().UTC()) {

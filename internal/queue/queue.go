@@ -16,6 +16,12 @@ var ErrEmpty = errors.New("queue: no ready jobs")
 // ErrClosed is returned when an operation is attempted on a closed queue.
 var ErrClosed = errors.New("queue: closed")
 
+// ErrFull is returned by Enqueue when a capacity-limited queue is already
+// holding as much newly submitted work as it is allowed to. It is the
+// queue's backpressure signal: producers should slow down, retry later, or
+// shed the request rather than treating it as a permanent failure.
+var ErrFull = errors.New("queue: full")
+
 // ErrNotFound is returned by ID-based lookups (e.g. Get, Cancel) when no job
 // with the given ID exists.
 var ErrNotFound = errors.New("queue: job not found")
