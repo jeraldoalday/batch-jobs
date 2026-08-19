@@ -17,6 +17,10 @@ const DefaultListLimit = 50
 // of what the caller asks for.
 const DefaultListMaxLimit = 500
 
+// DefaultRetryAfter is the Retry-After hint sent with a 503 when the
+// backing queue rejects an enqueue for being full.
+const DefaultRetryAfter = time.Second
+
 // Server exposes a Store over HTTP. A zero-value Server is not usable;
 // Store is required. All other fields are optional and have documented
 // defaults, applied by Handler.
@@ -52,6 +56,10 @@ type Server struct {
 	// GET /v1/events.
 	EventInterval time.Duration
 
+	// RetryAfter overrides DefaultRetryAfter, the Retry-After hint sent
+	// to a client whose enqueue was rejected because the queue is full.
+	RetryAfter time.Duration
+
 	// Assets, if set, is served as static files at "/" (e.g. dashboard.FS),
 	// falling in behind the API's own routes. A nil Assets (the default)
 	// leaves "/" unmounted, returning 404.
@@ -70,6 +78,9 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.ListMaxLimit <= 0 {
 		s.ListMaxLimit = DefaultListMaxLimit
+	}
+	if s.RetryAfter <= 0 {
+		s.RetryAfter = DefaultRetryAfter
 	}
 
 	mux := http.NewServeMux()

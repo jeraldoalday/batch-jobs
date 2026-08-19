@@ -28,6 +28,11 @@ type fakeStore struct {
 	enqueueErr error
 	listErr    error
 	statsErr   error
+
+	// enqueueFunc, when set, replaces the fake's own bookkeeping, so a
+	// test can put a real queue.Queue behind the HTTP handler without
+	// giving up the rest of the fake Store.
+	enqueueFunc func(*job.Job) error
 }
 
 func newFakeStore() *fakeStore {
@@ -37,6 +42,9 @@ func newFakeStore() *fakeStore {
 func (f *fakeStore) Enqueue(j *job.Job) error {
 	if f.enqueueErr != nil {
 		return f.enqueueErr
+	}
+	if f.enqueueFunc != nil {
+		return f.enqueueFunc(j)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()

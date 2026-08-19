@@ -2,10 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/jeraldoalday/batch-jobs/internal/job"
+	"github.com/jeraldoalday/batch-jobs/internal/queue"
 )
 
 // EnqueueRequest is the request body for POST /v1/jobs.
@@ -90,6 +92,14 @@ func (s *Server) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 	newID := j.ID
 
 	if err := s.Store.Enqueue(j); err != nil {
+		// A full queue is backpressure, not a server fault: the request
+		// was well-formed and will likely succeed once workers drain the
+		// backlog, so say so with 503 + Retry-After rather than 500.
+		if errors.Is(err, queue.ErrFull) {
+			s.Logger.Warn("api: enqueue rejected, queue full", "queue", req.Queue)
+			writeRetryable(w, http.StatusServiceUnavailable, "queue is full, retry later", s.RetryAfter)
+			return
+		}
 		s.Logger.Error("api: enqueue failed", "queue", req.Queue, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to enqueue job")
 		return
