@@ -57,10 +57,12 @@ type Router struct {
 	// fallback receives jobs whose queue name matches no route. Nil (the
 	// default) makes such an Enqueue fail with ErrNoRoute.
 	fallback *route
-	// cursor is the index of the route the last successful dequeue came
-	// from, so the next sweep resumes there and drains that route's
-	// remaining credit before moving on.
-	cursor int
+	// last is the route the most recent successful dequeue came from, so
+	// the next sweep resumes there and spends that route's remaining
+	// credit before moving on. It is held as a pointer rather than an
+	// index so registering a new route mid-flight cannot silently shift
+	// which route the cursor refers to.
+	last *route
 
 	closed  bool
 	changed chan struct{}
