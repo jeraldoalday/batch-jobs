@@ -1,6 +1,74 @@
 package worker
 
-import "context"
+import (
+	"context"
+	"time"
+)
+
+// autoscaling reports whether the pool resizes itself. Scale.Max is the
+// switch: without an explicit ceiling there is no safe upper bound to grow
+// toward, so the pool stays the size it was started at.
+func (p *Pool) autoscaling() bool {
+	return p.Scale.Max > 0
+}
+
+// initialSize is how many workers Start spawns: Concurrency, pulled into
+// the policy's bounds when autoscaling is enabled so a pool never starts
+// outside the range its own scaler would keep it in.
+func (p *Pool) initialSize() int {
+	if !p.autoscaling() {
+		return p.Concurrency
+	}
+
+	policy := p.Scale.normalized()
+	switch {
+	case p.Concurrency < policy.Min:
+		return policy.Min
+	case p.Concurrency > policy.Max:
+		return policy.Max
+	default:
+		return p.Concurrency
+	}
+}
+
+// autoscale samples the pool's workload every ScaleInterval and resizes it
+// to whatever the Scaler asks for, until ctx is cancelled.
+func (p *Pool) autoscale(ctx context.Context) {
+	scaler := &Scaler{Policy: p.Scale}
+
+	ticker := time.NewTicker(p.ScaleInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.rescale(scaler)
+		}
+	}
+}
+
+// rescale takes one sample and applies the scaler's decision to it. It is
+// separated from autoscale's timing loop so tests can drive a single
+// decision without waiting on a ticker.
+func (p *Pool) rescale(scaler *Scaler) {
+	sample := Sample{
+		Workers: p.Workers(),
+		Busy:    p.Busy(),
+		Backlog: p.Queue.Len(),
+	}
+
+	target := scaler.Next(sample)
+	if target == sample.Workers {
+		return
+	}
+
+	p.scaleTo(target)
+	p.Logger.Info("worker: pool resized",
+		"from", sample.Workers, "to", target,
+		"busy", sample.Busy, "backlog", sample.Backlog)
+}
 
 // Workers returns how many worker goroutines the pool currently has.
 func (p *Pool) Workers() int {

@@ -13,9 +13,10 @@ import (
 	"github.com/jeraldoalday/batch-jobs/internal/queue"
 )
 
-// Pool runs a fixed number of goroutines ("workers") that pull jobs from a
-// queue.Queue and execute them with a Handler. A Pool must not be copied
-// after Start has been called.
+// Pool runs a set of goroutines ("workers") that pull jobs from a
+// queue.Queue and execute them with a Handler. The set is a fixed size by
+// default; setting Scale.Max turns it into an autoscaling pool that tracks
+// its own backlog. A Pool must not be copied after Start has been called.
 type Pool struct {
 	// Queue is where workers pull jobs from. Required.
 	Queue queue.Queue
@@ -24,8 +25,20 @@ type Pool struct {
 	Handler Handler
 
 	// Concurrency is the number of worker goroutines to run. Defaults to
-	// 1 if unset.
+	// 1 if unset. When autoscaling is enabled it is the pool's starting
+	// size, clamped into the [Scale.Min, Scale.Max] range; otherwise it
+	// is the pool's size for its whole lifetime.
 	Concurrency int
+
+	// Scale, if its Max is positive, enables autoscaling: a background
+	// goroutine samples the pool's workload every ScaleInterval and
+	// resizes the worker set to match, within [Min, Max]. The zero value
+	// leaves the pool at a fixed Concurrency.
+	Scale Policy
+
+	// ScaleInterval is how often an autoscaling pool samples its workload.
+	// Defaults to DefaultScaleInterval. Ignored unless Scale.Max is set.
+	ScaleInterval time.Duration
 
 	// Backoff computes the delay before a failed job's next attempt.
 	// Defaults to ExponentialBackoff(time.Second, time.Minute) if unset.
@@ -78,9 +91,10 @@ type workerHandle struct {
 	retire context.CancelFunc
 }
 
-// Start launches Concurrency worker goroutines that pull from Queue until
-// ctx is cancelled or Stop is called. Start returns immediately; use Stop
-// or wait on ctx to know when workers have actually exited.
+// Start launches the pool's worker goroutines, which pull from Queue until
+// ctx is cancelled or Stop is called, plus the autoscaler goroutine if
+// Scale.Max is set. Start returns immediately; use Stop or wait on ctx to
+// know when workers have actually exited.
 func (p *Pool) Start(ctx context.Context) {
 	if p.Concurrency <= 0 {
 		p.Concurrency = 1
@@ -92,13 +106,29 @@ func (p *Pool) Start(ctx context.Context) {
 		p.Logger = slog.Default()
 	}
 
+	if p.ScaleInterval <= 0 {
+		p.ScaleInterval = DefaultScaleInterval
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	p.cancel = cancel
 	p.poolCtx = ctx
 
-	p.scaleTo(p.Concurrency)
+	initial := p.initialSize()
+	p.scaleTo(initial)
 
-	p.Logger.Info("worker: pool started", "concurrency", p.Concurrency)
+	if p.autoscaling() {
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			p.autoscale(ctx)
+		}()
+		p.Logger.Info("worker: pool started", "concurrency", initial,
+			"min", p.Scale.normalized().Min, "max", p.Scale.normalized().Max)
+		return
+	}
+
+	p.Logger.Info("worker: pool started", "concurrency", initial)
 }
 
 // Stop signals all workers to stop pulling new jobs and blocks until every
