@@ -70,6 +70,8 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/QueueFull"
     get:
       summary: List jobs by status
       parameters:
@@ -362,6 +364,22 @@ components:
             $ref: "#/components/schemas/Error"
     InternalServerError:
       description: Unexpected server-side error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    QueueFull:
+      description: >
+        The backing queue is at capacity and is applying backpressure. The
+        request was valid and is expected to succeed once workers drain the
+        backlog, so clients should retry after the interval advertised in
+        the Retry-After header rather than treating this as a failure.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying the request.
+          schema:
+            type: integer
+            minimum: 1
       content:
         application/json:
           schema:
