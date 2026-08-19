@@ -89,11 +89,21 @@ func (r *Router) startIndexLocked(routes []*route) int {
 }
 
 // refillLocked starts a new weighted round, restoring every route's credit
-// to its configured weight. Callers must hold r.mu.
+// to its configured weight and clearing the cursor.
+//
+// Clearing the cursor is the part that matters: it makes the new round
+// begin at the first route in registration order rather than at whichever
+// route happened to serve last. Without it, the route that closed out the
+// previous round would immediately serve again on the fresh credit — three
+// heavy jobs, one light one, then another heavy one out of turn — which is
+// a full round of unfairness handed to whoever finished last.
+//
+// Callers must hold r.mu.
 func (r *Router) refillLocked(routes []*route) {
 	for _, rt := range routes {
 		rt.credit = rt.weight
 	}
+	r.last = nil
 }
 
 // pickLocked runs the weighted round-robin sweep. A route may serve up to
