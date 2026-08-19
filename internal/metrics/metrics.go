@@ -26,6 +26,9 @@ type Metrics struct {
 	jobDuration   *prometheus.HistogramVec
 	jobsInFlight  *prometheus.GaugeVec
 
+	poolWorkers     *prometheus.GaugeVec
+	poolScaleEvents *prometheus.CounterVec
+
 	scheduleFires  prometheus.Counter
 	scheduleErrors prometheus.Counter
 	tickDuration   prometheus.Histogram
@@ -54,6 +57,16 @@ func New(reg *prometheus.Registry) *Metrics {
 			Name:      "jobs_in_flight",
 			Help:      "Number of jobs currently executing in a handler, labeled by queue.",
 		}, []string{"queue"}),
+		poolWorkers: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "pool_workers",
+			Help:      "Number of worker goroutines currently running in the pool.",
+		}, []string{"pool"}),
+		poolScaleEvents: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "pool_scale_events_total",
+			Help:      "Total number of autoscaling decisions applied to the pool, labeled by direction (up, down).",
+		}, []string{"pool", "direction"}),
 		scheduleFires: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "schedule_fires_total",
@@ -71,7 +84,8 @@ func New(reg *prometheus.Registry) *Metrics {
 			Buckets:   prometheus.DefBuckets,
 		}),
 	}
-	reg.MustRegister(m.jobsProcessed, m.jobDuration, m.jobsInFlight, m.scheduleFires, m.scheduleErrors, m.tickDuration)
+	reg.MustRegister(m.jobsProcessed, m.jobDuration, m.jobsInFlight, m.poolWorkers, m.poolScaleEvents,
+		m.scheduleFires, m.scheduleErrors, m.tickDuration)
 	return m
 }
 

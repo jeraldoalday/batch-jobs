@@ -24,6 +24,10 @@ type Pool struct {
 	// Handler processes each dequeued job. Required.
 	Handler Handler
 
+	// Name labels this pool in metrics, so a process running several
+	// pools can tell their worker counts apart. Defaults to "default".
+	Name string
+
 	// Concurrency is the number of worker goroutines to run. Defaults to
 	// 1 if unset. When autoscaling is enabled it is the pool's starting
 	// size, clamped into the [Scale.Min, Scale.Max] range; otherwise it
@@ -109,6 +113,9 @@ func (p *Pool) Start(ctx context.Context) {
 	if p.ScaleInterval <= 0 {
 		p.ScaleInterval = DefaultScaleInterval
 	}
+	if p.Name == "" {
+		p.Name = DefaultPoolName
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	p.cancel = cancel
@@ -116,6 +123,7 @@ func (p *Pool) Start(ctx context.Context) {
 
 	initial := p.initialSize()
 	p.scaleTo(initial)
+	p.Metrics.SetPoolWorkers(p.Name, initial)
 
 	if p.autoscaling() {
 		p.wg.Add(1)
@@ -142,6 +150,7 @@ func (p *Pool) Stop() {
 	p.mu.Lock()
 	p.workers = nil
 	p.mu.Unlock()
+	p.Metrics.SetPoolWorkers(p.Name, 0)
 
 	if p.Logger != nil {
 		p.Logger.Info("worker: pool stopped")

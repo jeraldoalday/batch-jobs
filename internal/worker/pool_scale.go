@@ -5,6 +5,9 @@ import (
 	"time"
 )
 
+// DefaultPoolName labels a Pool in metrics when Name is left unset.
+const DefaultPoolName = "default"
+
 // autoscaling reports whether the pool resizes itself. Scale.Max is the
 // switch: without an explicit ceiling there is no safe upper bound to grow
 // toward, so the pool stays the size it was started at.
@@ -65,6 +68,7 @@ func (p *Pool) rescale(scaler *Scaler) {
 	}
 
 	p.scaleTo(target)
+	p.Metrics.ObservePoolScale(p.Name, sample.Workers, target)
 	p.Logger.Info("worker: pool resized",
 		"from", sample.Workers, "to", target,
 		"busy", sample.Busy, "backlog", sample.Backlog)
