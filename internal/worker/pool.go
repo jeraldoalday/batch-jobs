@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeraldoalday/batch-jobs/internal/job"
@@ -44,8 +45,37 @@ type Pool struct {
 	// default) disables instrumentation.
 	Metrics *metrics.Metrics
 
+	// mu guards the worker set below. It is held only for bookkeeping —
+	// spawning and retiring — never while a handler runs.
+	mu      sync.Mutex
+	workers []*workerHandle
+	nextID  int
+
+	// busy counts workers currently inside a handler, as opposed to
+	// blocked in Dequeue waiting for one. It is read by the autoscaler
+	// from its own goroutine, so it is atomic rather than guarded by mu.
+	busy atomic.Int64
+
+	// poolCtx is the context Start was given, cancelled by Stop. Handlers
+	// run under it, so cancelling it interrupts in-flight work; each
+	// worker additionally gets its own child context used solely for
+	// Dequeue, so retiring one worker cannot disturb another's job.
+	poolCtx context.Context
+
 	wg     sync.WaitGroup
 	cancel context.CancelFunc
+}
+
+// workerHandle is the pool's record of one running worker goroutine.
+type workerHandle struct {
+	// id identifies the worker in log lines.
+	id int
+
+	// retire cancels the worker's Dequeue context, so it stops asking for
+	// new jobs and exits. It deliberately does not touch the context the
+	// worker's current handler is running under: a retired worker
+	// finishes the job in its hands before going away.
+	retire context.CancelFunc
 }
 
 // Start launches Concurrency worker goroutines that pull from Queue until
@@ -64,14 +94,9 @@ func (p *Pool) Start(ctx context.Context) {
 
 	ctx, cancel := context.WithCancel(ctx)
 	p.cancel = cancel
+	p.poolCtx = ctx
 
-	p.wg.Add(p.Concurrency)
-	for i := 0; i < p.Concurrency; i++ {
-		go func(id int) {
-			defer p.wg.Done()
-			p.loop(ctx, id)
-		}(i)
-	}
+	p.scaleTo(p.Concurrency)
 
 	p.Logger.Info("worker: pool started", "concurrency", p.Concurrency)
 }
@@ -83,18 +108,29 @@ func (p *Pool) Stop() {
 		p.cancel()
 	}
 	p.wg.Wait()
+
+	p.mu.Lock()
+	p.workers = nil
+	p.mu.Unlock()
+
 	if p.Logger != nil {
 		p.Logger.Info("worker: pool stopped")
 	}
 }
 
-func (p *Pool) loop(ctx context.Context, id int) {
+// loop is one worker goroutine. It pulls jobs using dequeueCtx, which is
+// cancelled when this particular worker is retired or the pool stops, and
+// runs each handler under ctx, the pool-wide context, so retiring a worker
+// never cancels the job it is already running.
+func (p *Pool) loop(ctx, dequeueCtx context.Context, id int) {
 	for {
-		j, err := p.Queue.Dequeue(ctx)
+		j, err := p.Queue.Dequeue(dequeueCtx)
 		if err != nil {
 			return
 		}
+		p.busy.Add(1)
 		p.process(ctx, j)
+		p.busy.Add(-1)
 	}
 }
 
