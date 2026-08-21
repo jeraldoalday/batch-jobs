@@ -7,6 +7,7 @@ package sqlitemigrate
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path"
@@ -15,6 +16,13 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrDuplicateVersion is returned by Apply when two migration files in the
+// same directory share a version number. Applying both would leave the
+// schema in an order-dependent state and only one of them could ever be
+// recorded in schema_migrations, so it is rejected up front rather than
+// half-applied.
+var ErrDuplicateVersion = errors.New("sqlitemigrate: duplicate migration version")
 
 // migrationsTable tracks which migrations have already been applied so
 // Apply is safe to run every time a store is opened.
@@ -64,7 +72,26 @@ func load(fsys fs.FS, dir string) ([]migration, error) {
 	}
 
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].version < migrations[j].version })
+
+	if err := checkDuplicates(migrations); err != nil {
+		return nil, err
+	}
 	return migrations, nil
+}
+
+// checkDuplicates reports an error if two migrations in the (already
+// sorted) slice share a version number. A directory holding both
+// "0003_leases.sql" and "0003_owners.sql" is a merge accident: whichever
+// one loses the race is silently skipped forever afterwards, because
+// schema_migrations only records the version.
+func checkDuplicates(migrations []migration) error {
+	for i := 1; i < len(migrations); i++ {
+		if migrations[i].version == migrations[i-1].version {
+			return fmt.Errorf("%w: %d shared by %s and %s",
+				ErrDuplicateVersion, migrations[i].version, migrations[i-1].name, migrations[i].name)
+		}
+	}
+	return nil
 }
 
 // versionFromFilename extracts the leading integer from a migration
