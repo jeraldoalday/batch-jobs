@@ -22,6 +22,8 @@ import (
 	"github.com/jeraldoalday/batch-jobs/internal/dashboard"
 	"github.com/jeraldoalday/batch-jobs/internal/metrics"
 	"github.com/jeraldoalday/batch-jobs/internal/queue/sqlite"
+	"github.com/jeraldoalday/batch-jobs/internal/sqlitemigrate"
+	"github.com/jeraldoalday/batch-jobs/internal/sqlitex"
 )
 
 func main() {
@@ -32,13 +34,27 @@ func main() {
 	rateBurst := flag.Int("rate-burst", 20, "burst size for per-client rate limiting")
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn, or error")
 	enableDashboard := flag.Bool("dashboard", true, "serve the web dashboard at /")
+	leaseTTL := flag.Duration("lease-ttl", sqlite.DefaultLeaseTTL, "how long a claimed job stays claimed without a heartbeat before it can be recovered (negative disables leasing)")
+	reapInterval := flag.Duration("reap-interval", sqlite.DefaultReapInterval, "how often to reclaim jobs whose worker died holding them (0 disables the reaper)")
+	autoMigrate := flag.Bool("migrate", true, "apply pending schema migrations on startup; with -migrate=false, refuse to start against a database that needs them")
 	shutdownTimeout := flag.Duration("shutdown-timeout", 10*time.Second, "how long to wait for in-flight requests to finish on SIGINT/SIGTERM before forcing shutdown")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parseLevel(*logLevel)}))
 	slog.SetDefault(logger)
 
-	q, err := sqlite.Open(*dbPath)
+	if !*autoMigrate {
+		// Deployments that migrate deliberately (with batch-jobs-migrate,
+		// in a step of their own) want a server that starts against the
+		// schema it expects or not at all, rather than one that quietly
+		// changes the database as a side effect of booting.
+		if err := requireMigratedSchema(*dbPath); err != nil {
+			logger.Error("database schema is not up to date", "path", *dbPath, "error", err)
+			os.Exit(1)
+		}
+	}
+
+	q, err := sqlite.Open(*dbPath, sqlite.Options{LeaseTTL: *leaseTTL})
 	if err != nil {
 		logger.Error("failed to open database", "path", *dbPath, "error", err)
 		os.Exit(1)
@@ -48,6 +64,19 @@ func main() {
 	m := metrics.New(prometheus.NewRegistry())
 	if err := m.RegisterQueueDepth("default", q.Len); err != nil {
 		logger.Warn("failed to register queue depth gauge", "error", err)
+	}
+	if err := m.RegisterExpiredLeases("default", func() int {
+		n, err := q.ExpiredLeases()
+		if err != nil {
+			// A scrape is not the place to surface a database error;
+			// reporting zero keeps the endpoint serving, and the
+			// reaper logs the same failure where it can be acted on.
+			logger.Debug("failed to count expired leases", "error", err)
+			return 0
+		}
+		return n
+	}); err != nil {
+		logger.Warn("failed to register expired lease gauge", "error", err)
 	}
 
 	srv := &api.Server{
@@ -65,6 +94,15 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// The reaper's first sweep runs as part of Start, which is also the
+	// startup recovery pass: if this process is replacing one that
+	// crashed, its jobs are orphaned right now.
+	if *reapInterval > 0 && q.LeaseTTL() > 0 {
+		reaper := &sqlite.Reaper{Queue: q, Interval: *reapInterval, Logger: logger, Metrics: m}
+		reaper.Start(ctx)
+		defer reaper.Stop()
+	}
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -91,6 +129,33 @@ func main() {
 	}
 
 	logger.Info("batch-jobs-server: stopped")
+}
+
+// requireMigratedSchema reports an error unless path's schema matches this
+// binary's migrations exactly: nothing pending, nothing drifted, nothing
+// applied that this build does not know about.
+func requireMigratedSchema(path string) error {
+	db, err := sqlitex.Open(path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	records, err := sqlitemigrate.Status(db, sqlite.Migrations(), sqlite.MigrationsDir)
+	if err != nil {
+		return err
+	}
+
+	pending := 0
+	for _, r := range records {
+		if r.Pending() {
+			pending++
+		}
+	}
+	if pending > 0 {
+		return fmt.Errorf("%d migration(s) pending; run: batch-jobs-migrate -db %s up", pending, path)
+	}
+	return sqlitemigrate.Verify(db, sqlite.Migrations(), sqlite.MigrationsDir)
 }
 
 func parseLevel(s string) slog.Level {
