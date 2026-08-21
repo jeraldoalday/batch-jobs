@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jeraldoalday/batch-jobs/internal/job"
 	"github.com/jeraldoalday/batch-jobs/internal/queue"
@@ -69,6 +70,17 @@ func (b *Bound) Len() int {
 	).Scan(&n)
 	return n
 }
+
+// Heartbeat extends the lease on a running job, delegating to the
+// underlying Queue. Leases are keyed by job ID, which is unique across
+// every logical queue sharing the database, so a view needs no filter of
+// its own here.
+func (b *Bound) Heartbeat(id string) error { return b.q.Heartbeat(id) }
+
+// LeaseTTL returns the underlying Queue's lease duration, so a worker
+// handed a bound view can pick its heartbeat interval the same way it
+// would from the Queue itself.
+func (b *Bound) LeaseTTL() time.Duration { return b.q.LeaseTTL() }
 
 // Close implements queue.Queue as a no-op. A view does not own the
 // database it reads from — several views and the Queue itself share one
