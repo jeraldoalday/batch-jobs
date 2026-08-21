@@ -111,28 +111,20 @@ func versionFromFilename(name string) (int, error) {
 // Apply applies every *.sql file in dir (within fsys) that has not already
 // been recorded in schema_migrations, each inside its own transaction, in
 // ascending version order.
+//
+// Migrations that were already applied are checked against the checksum
+// recorded at the time: if one of their files has since been edited, Apply
+// fails with ErrChecksumMismatch rather than carrying on against a schema
+// it can no longer describe.
 func Apply(db *sql.DB, fsys fs.FS, dir string) error {
-	if _, err := db.Exec(migrationsTable); err != nil {
-		return fmt.Errorf("create schema_migrations: %w", err)
-	}
-
-	applied := make(map[int]bool)
-	rows, err := db.Query(`SELECT version FROM schema_migrations`)
-	if err != nil {
-		return fmt.Errorf("read applied migrations: %w", err)
-	}
-	for rows.Next() {
-		var v int
-		if err := rows.Scan(&v); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan applied migration: %w", err)
-		}
-		applied[v] = true
-	}
-	if err := rows.Err(); err != nil {
+	if err := ensureTable(db); err != nil {
 		return err
 	}
-	rows.Close()
+
+	applied, err := appliedChecksums(db)
+	if err != nil {
+		return err
+	}
 
 	migrations, err := load(fsys, dir)
 	if err != nil {
@@ -140,7 +132,10 @@ func Apply(db *sql.DB, fsys fs.FS, dir string) error {
 	}
 
 	for _, m := range migrations {
-		if applied[m.version] {
+		if recorded, ok := applied[m.version]; ok {
+			if err := verifyChecksum(db, m, recorded); err != nil {
+				return err
+			}
 			continue
 		}
 		if err := applyOne(db, m); err != nil {
@@ -148,6 +143,42 @@ func Apply(db *sql.DB, fsys fs.FS, dir string) error {
 		}
 	}
 	return nil
+}
+
+// ensureTable creates schema_migrations if needed and brings an
+// older database's copy of it up to the current shape.
+func ensureTable(db *sql.DB) error {
+	if _, err := db.Exec(migrationsTable); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+	return ensureChecksumColumn(db)
+}
+
+// appliedChecksums returns the checksum recorded for each already-applied
+// version. A version present in the map with an empty string was applied
+// before this package recorded checksums.
+func appliedChecksums(db *sql.DB) (map[int]string, error) {
+	rows, err := db.Query(`SELECT version, checksum FROM schema_migrations`)
+	if err != nil {
+		return nil, fmt.Errorf("read applied migrations: %w", err)
+	}
+	defer rows.Close()
+
+	applied := make(map[int]string)
+	for rows.Next() {
+		var (
+			version int
+			sum     string
+		)
+		if err := rows.Scan(&version, &sum); err != nil {
+			return nil, fmt.Errorf("scan applied migration: %w", err)
+		}
+		applied[version] = sum
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return applied, nil
 }
 
 // applyOne runs one migration's statements and records it, atomically.
@@ -170,8 +201,8 @@ func applyOne(db *sql.DB, m migration) error {
 	defer tx.Rollback()
 
 	if _, err := tx.Exec(
-		`INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`,
-		m.version, m.name, time.Now().UTC().UnixNano(),
+		`INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?, ?, ?, ?)`,
+		m.version, m.name, time.Now().UTC().UnixNano(), checksum(m.sql),
 	); err != nil {
 		if isAlreadyRecorded(err) {
 			// Another process applied this migration while we were
