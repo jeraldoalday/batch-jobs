@@ -180,6 +180,58 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalServerError"
+  /v1/recover:
+    post:
+      summary: Reclaim jobs whose worker died holding them
+      description: >
+        A worker claims a job under a time-bounded lease and extends it by
+        heartbeating while it runs. If the worker's process dies, nothing
+        reports an outcome and the job would otherwise sit in status
+        running forever. Recovery reclaims every job whose lease has
+        expired: each is returned to pending for another attempt, or moved
+        to dead if its retries are already spent.
+
+
+        A reaper normally does this on a schedule; this endpoint is for
+        when waiting for the next sweep is not acceptable, such as an
+        operator who has just confirmed a host is gone. It is safe to call
+        at any time and while workers are running: a job whose worker is
+        alive and heartbeating is never touched.
+      responses:
+        "200":
+          description: Recovery pass complete
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requeued:
+                    type: integer
+                    description: Orphaned jobs returned to pending.
+                    example: 3
+                  dead_lettered:
+                    type: integer
+                    description: Orphaned jobs with no retries left, moved to dead.
+                    example: 1
+                  remaining:
+                    type: integer
+                    description: >
+                      Expired claims still outstanding after the pass,
+                      normally 0. A non-zero value means orphans are being
+                      created faster than one pass can clear them.
+                    example: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          description: The configured store does not lease jobs and has nothing to recover
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/events:
     get:
       summary: Live job-count stats via Server-Sent Events

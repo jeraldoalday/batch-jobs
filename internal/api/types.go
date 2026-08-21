@@ -54,6 +54,19 @@ type StatsResponse struct {
 	Counts map[string]int `json:"counts"`
 }
 
+// RecoverResponse is the response body for POST /v1/recover.
+type RecoverResponse struct {
+	// Requeued is how many orphaned jobs were put back in the queue.
+	Requeued int `json:"requeued"`
+
+	// DeadLettered is how many orphaned jobs had no retries left.
+	DeadLettered int `json:"dead_lettered"`
+
+	// Remaining is how many expired claims are still outstanding after
+	// the pass, normally zero.
+	Remaining int `json:"remaining"`
+}
+
 // errorResponse is the response body for any non-2xx response.
 type errorResponse struct {
 	Error string `json:"error"`
