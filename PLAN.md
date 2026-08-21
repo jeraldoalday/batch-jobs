@@ -108,9 +108,30 @@
 - `batchjobs_pool_workers` and `batchjobs_pool_scale_events_total`
   metrics; router fan-out/sweep benchmarks
 
-## Day 11 — Persistence hardening
-- Crash recovery tests
-- Migration tooling
+## Day 11 — Persistence hardening (done)
+- Job leases: `queue/sqlite` migration 0003 adds `owner` and
+  `lease_expires_at`, stamped by the same UPDATE that claims a job, so
+  there is no window where a job is running unleased. `Queue.Heartbeat`
+  extends a claim; `Queue.Recover` reclaims claims whose lease lapsed
+  (requeue, or dead-letter when retries are spent, so a worker-killing job
+  cannot cycle forever); `sqlite.Reaper` runs that sweep on an interval and
+  once at startup
+- `worker.Pool` heartbeats any queue implementing `Heartbeater` while a
+  handler runs, deriving its interval from the queue's TTL, and cancels the
+  handler if the lease is lost mid-flight; `queue.Router` forwards
+  heartbeats to whichever route holds the job and reports the shortest TTL
+- Bug fix: terminal outcomes were never written back, so a finished job's
+  row stayed `running` forever — a reporting problem before leases and a
+  duplicate-execution one after. `queue.Completer` / `Queue.Complete` and
+  `Pool.complete` close it
+- `internal/sqlitemigrate` hardening: per-migration SHA-256 checksums with
+  drift detection, duplicate-version and cross-set collision checks,
+  concurrent-`Apply` safety (bookkeeping row written first), and read-only
+  `Status`/`Verify`/`Version`
+- `cmd/batch-jobs-migrate` (status/up/verify/version) plus
+  `-migrate=false`, `-lease-ttl`, and `-reap-interval` on the server;
+  `POST /v1/recover`; `batchjobs_jobs_recovered_total` and
+  `batchjobs_expired_leases` metrics
 
 ## Day 12 — API polish
 - Public API ergonomics, examples, godoc

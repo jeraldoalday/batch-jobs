@@ -11,9 +11,10 @@ disk-backed queue when needed.
 ## Status
 
 Early development. The core queue and job model, both storage backends,
-scheduling, observability, an HTTP API, a dashboard, and the first scaling
-controls (multi-queue routing, pool autoscaling, backpressure) are in
-place. See commit history for progress.
+scheduling, observability, an HTTP API, a dashboard, the first scaling
+controls (multi-queue routing, pool autoscaling, backpressure), and
+persistence hardening (job leases, crash recovery, migration tooling) are
+in place. See commit history for progress.
 
 ## Goals
 
@@ -102,6 +103,37 @@ in general.
   unique index, so it holds even across process restarts and concurrent
   writers; `queue.Memory` scopes it to jobs still waiting (not yet claimed by
   a worker), since it keeps no record of a job once dequeued.
+- **Crash recovery.** A worker claims a job under a time-bounded *lease*
+  (`sqlite.Options{LeaseTTL: ...}`, default 60s) and `worker.Pool` extends
+  that lease by heartbeating while the handler runs, so a slow job keeps its
+  claim for as long as the worker holding it is alive. If the process dies
+  instead, nothing renews the lease, and `Queue.Recover` hands the job back:
+  requeued for another attempt, or dead-lettered if its retries are already
+  spent. Recovery spends an attempt, so a job that kills whichever worker
+  picks it up eventually lands in the dead-letter state rather than crashing
+  workers forever. `sqlite.Reaper` runs that sweep on an interval (and once
+  immediately on start, for the process replacing a crashed peer), and
+  `POST /v1/recover` triggers it on demand.
+
+  ```go
+  q, _ := sqlite.Open("jobs.db", sqlite.Options{LeaseTTL: 30 * time.Second})
+
+  reaper := &sqlite.Reaper{Queue: q, Interval: 10 * time.Second, Metrics: m}
+  reaper.Start(ctx)
+  defer reaper.Stop()
+
+  // The pool heartbeats automatically for any queue that leases.
+  pool := &worker.Pool{Queue: q, Handler: handle, Metrics: m}
+  ```
+
+  A worker that loses its lease mid-job (because recovery reclaimed it) has
+  its handler context cancelled and its outcome discarded, so two workers
+  never race to report on the same attempt.
+- **Outcome write-back.** `worker.Pool` reports terminal outcomes to queues
+  implementing `queue.Completer` (`queue/sqlite.Queue` does), so a finished
+  job's stored row leaves `running` and releases its lease. Retries go back
+  through `Enqueue` as before; `queue.Memory`, which drops a job the moment
+  it is claimed, is unaffected.
 - **Graceful shutdown.** `cmd/batch-jobs-server` listens for SIGINT/SIGTERM
   and calls `http.Server.Shutdown`, giving in-flight requests up to
   `-shutdown-timeout` (default 10s) to finish before the listener is forced
@@ -235,6 +267,12 @@ once the backlog drains.
   - `batchjobs_pool_workers{pool}` — worker goroutines currently running
   - `batchjobs_pool_scale_events_total{pool,direction}` — autoscaling
     decisions applied, by direction (`up`, `down`)
+  - `batchjobs_jobs_recovered_total{outcome}` — orphaned jobs reclaimed
+    after a worker died holding them, by outcome (`requeued`, `dead`)
+  - `batchjobs_expired_leases{queue}` — a pull-based gauge of claims that
+    have lapsed but not yet been recovered, registered via
+    `Metrics.RegisterExpiredLeases`; it stays above zero when a reaper has
+    stopped running
   - `batchjobs_schedule_fires_total` / `batchjobs_schedule_errors_total` —
     schedule fire outcomes
   - `batchjobs_scheduler_tick_duration_seconds` — time per scheduler poll
@@ -266,6 +304,7 @@ directly) over REST:
 | GET    | `/v1/jobs?status=&limit=` | List jobs by status              |
 | POST   | `/v1/jobs/{id}/cancel`  | Cancel a pending/retrying job      |
 | POST   | `/v1/jobs/{id}/retry`   | Retry a dead/failed job             |
+| POST   | `/v1/recover`           | Reclaim jobs orphaned by a dead worker (501 if the store doesn't lease) |
 | GET    | `/v1/stats`             | Job counts by status               |
 | GET    | `/v1/events`            | SSE stream of live stats           |
 | GET    | `/healthz`              | Liveness probe (never requires auth) |
@@ -292,6 +331,38 @@ binary wiring this up against a SQLite-backed queue lives in
 ```sh
 go run ./cmd/batch-jobs-server -addr :8080 -db jobs.db
 ```
+
+Lease and recovery behaviour are flags too: `-lease-ttl` (negative disables
+leasing), `-reap-interval` (0 disables the reaper), and `-migrate=false` to
+refuse to start against a database whose schema this binary did not expect.
+
+## Schema migrations
+
+Migrations are numbered `.sql` files embedded in each store
+(`internal/queue/sqlite/migrations`, `internal/schedule/sqlite/migrations`)
+and applied by `internal/sqlitemigrate`, which records each one in a
+`schema_migrations` table along with a SHA-256 of its contents. That
+checksum is the point: editing a migration after it has been applied would
+otherwise leave the running database and the migration set describing
+different schemas, silently. Applying is safe from several processes at
+once — the bookkeeping row is written first, so whichever process loses the
+race skips the migration rather than half-applying it.
+
+`cmd/batch-jobs-migrate` separates the schema decision from the deploy:
+
+```sh
+go run ./cmd/batch-jobs-migrate -db jobs.db status   # what would run, and what already has
+go run ./cmd/batch-jobs-migrate -db jobs.db up       # apply everything pending
+go run ./cmd/batch-jobs-migrate -db jobs.db verify   # deploy gate: non-zero on drift
+go run ./cmd/batch-jobs-migrate -db jobs.db version  # highest applied version
+```
+
+`status` reports each migration as `applied`, `pending`, `drifted` (its file
+changed after it was applied), or `missing` (the database was migrated by a
+newer build than the one running). Each store keeps its own database file:
+pointing two migration sets at one file is rejected, since they number
+migrations independently and would collide in a shared `schema_migrations`
+table.
 
 ## Dashboard
 
