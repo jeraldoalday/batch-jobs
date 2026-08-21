@@ -27,8 +27,13 @@ WHERE status IN ('pending', 'retrying') AND (?1 = '' OR queue = ?1);
 // or awaiting retry and its scheduled run_at has passed. An empty ?2
 // claims from any queue; otherwise only jobs on that named queue are
 // eligible.
+//
+// The same statement stamps the claim with its holder (?3) and its expiry
+// (?4), so a job is never momentarily running without a lease: a crash
+// between claiming and leasing would leave exactly the orphan the lease
+// exists to catch.
 const claimQuery = `
-UPDATE jobs SET status = 'running', updated_at = ?1
+UPDATE jobs SET status = 'running', updated_at = ?1, owner = ?3, lease_expires_at = ?4
 WHERE id = (
     SELECT id FROM jobs
     WHERE status IN ('pending', 'retrying') AND run_at <= ?1
@@ -56,7 +61,7 @@ func (q *Queue) tryClaim(name string) (*job.Job, error) {
 	}
 
 	now := time.Now().UTC()
-	row := q.db.QueryRow(claimQuery, now.UnixNano(), name)
+	row := q.db.QueryRow(claimQuery, now.UnixNano(), name, q.owner, q.leaseExpiry(now))
 
 	j, err := scanJob(row)
 	if errors.Is(err, sql.ErrNoRows) {
