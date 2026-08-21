@@ -36,6 +36,22 @@ func crashedQueue(t *testing.T, path string, opts ...job.Option) string {
 	return claimed.ID
 }
 
+// openLeasedQueue opens a Queue on a named in-memory database with the
+// given lease settings. The DSN is shared-cache rather than plain
+// ":memory:" because these tests exercise code paths that run from another
+// goroutine (a Reaper sweeping while workers claim), and every connection
+// database/sql opens against ":memory:" gets a private, empty database of
+// its own.
+func openLeasedQueue(t *testing.T, opts Options) *Queue {
+	t.Helper()
+	q, err := Open("file:"+t.Name()+"?mode=memory&cache=shared", opts)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { q.Close() })
+	return q
+}
+
 func TestRecoverRequeuesOrphanedJob(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.db")
 	id := crashedQueue(t, path, job.WithMaxRetries(3))
@@ -146,11 +162,7 @@ func TestRecoverSpendsOneAttemptPerCrash(t *testing.T) {
 }
 
 func TestRecoverLeavesLiveClaimsAlone(t *testing.T) {
-	q, err := Open(":memory:", Options{LeaseTTL: time.Minute})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { q.Close() })
+	q := openLeasedQueue(t, Options{LeaseTTL: time.Minute})
 
 	j := job.New("q", []byte("work"), job.WithMaxRetries(3))
 	if err := q.Enqueue(j); err != nil {
@@ -180,11 +192,7 @@ func TestRecoverLeavesLiveClaimsAlone(t *testing.T) {
 func TestRecoverIgnoresUnleasedJobs(t *testing.T) {
 	// A negative TTL disables leasing, standing in for both an opted-out
 	// deployment and rows written before migration 0003.
-	q, err := Open(":memory:", Options{LeaseTTL: -1})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { q.Close() })
+	q := openLeasedQueue(t, Options{LeaseTTL: -1})
 
 	if q.LeaseTTL() != 0 {
 		t.Fatalf("LeaseTTL with leasing disabled = %v, want 0", q.LeaseTTL())
@@ -234,11 +242,7 @@ func TestExpiredLeasesCountsOrphansUntilRecovered(t *testing.T) {
 }
 
 func TestHeartbeatKeepsLeaseAlive(t *testing.T) {
-	q, err := Open(":memory:", Options{LeaseTTL: 50 * time.Millisecond})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { q.Close() })
+	q := openLeasedQueue(t, Options{LeaseTTL: 50 * time.Millisecond})
 
 	j := job.New("q", []byte("slow"), job.WithMaxRetries(3))
 	if err := q.Enqueue(j); err != nil {
@@ -265,11 +269,7 @@ func TestHeartbeatKeepsLeaseAlive(t *testing.T) {
 }
 
 func TestHeartbeatReportsLostLease(t *testing.T) {
-	q, err := Open(":memory:", Options{LeaseTTL: time.Nanosecond})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { q.Close() })
+	q := openLeasedQueue(t, Options{LeaseTTL: time.Nanosecond})
 
 	j := job.New("q", []byte("work"), job.WithMaxRetries(3))
 	if err := q.Enqueue(j); err != nil {
@@ -282,7 +282,7 @@ func TestHeartbeatReportsLostLease(t *testing.T) {
 		t.Fatalf("Recover: %v", err)
 	}
 
-	err = q.Heartbeat(j.ID)
+	err := q.Heartbeat(j.ID)
 	var lost *LeaseLostError
 	if !errors.As(err, &lost) {
 		t.Fatalf("Heartbeat after recovery = %v, want *LeaseLostError", err)
@@ -299,11 +299,7 @@ func TestHeartbeatReportsLostLease(t *testing.T) {
 }
 
 func TestHeartbeatUnknownJob(t *testing.T) {
-	q, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { q.Close() })
+	q := openLeasedQueue(t, Options{})
 
 	if err := q.Heartbeat("nope"); !errors.Is(err, queue.ErrNotFound) {
 		t.Fatalf("Heartbeat on an unknown job = %v, want queue.ErrNotFound", err)
@@ -311,11 +307,7 @@ func TestHeartbeatUnknownJob(t *testing.T) {
 }
 
 func TestHeartbeatIsNoOpWithoutLeases(t *testing.T) {
-	q, err := Open(":memory:", Options{LeaseTTL: -1})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { q.Close() })
+	q := openLeasedQueue(t, Options{LeaseTTL: -1})
 
 	// No job, no lease, no error: callers should not have to check
 	// whether the queue leases before heartbeating.
@@ -342,11 +334,7 @@ func TestRecoverOnClosedQueue(t *testing.T) {
 }
 
 func TestEnqueueClearsLeaseBookkeeping(t *testing.T) {
-	q, err := Open(":memory:", Options{LeaseTTL: time.Minute, Owner: "worker-1"})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { q.Close() })
+	q := openLeasedQueue(t, Options{LeaseTTL: time.Minute, Owner: "worker-1"})
 
 	j := job.New("q", []byte("work"), job.WithMaxRetries(3))
 	if err := q.Enqueue(j); err != nil {
