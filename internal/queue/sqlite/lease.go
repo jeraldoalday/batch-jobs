@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/jeraldoalday/batch-jobs/internal/queue"
 )
 
 // DefaultLeaseTTL is how long a claimed job stays claimed without a
@@ -26,6 +28,12 @@ type LeaseLostError struct {
 	// empty if the job could not be read back.
 	Status string
 }
+
+// Unwrap reports queue.ErrLeaseLost, so callers can recognize lease loss
+// with errors.Is without importing this package. The concrete type is
+// still there for anyone who wants the job ID and the status it was found
+// in.
+func (e *LeaseLostError) Unwrap() error { return queue.ErrLeaseLost }
 
 func (e *LeaseLostError) Error() string {
 	if e.Status == "" {

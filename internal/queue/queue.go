@@ -34,6 +34,17 @@ var ErrNotCancelable = errors.New("queue: job not cancelable")
 // retryable state (anything other than dead or failed).
 var ErrNotRetryable = errors.New("queue: job not retryable")
 
+// ErrLeaseLost is returned (or wrapped) by a Queue that leases claimed jobs
+// when the caller no longer holds the lease on the job it names: recovery
+// reclaimed it after the lease expired, or it reached a terminal state some
+// other way.
+//
+// It is a sentinel in this package rather than a concrete type in the
+// backend that produces it so that consumers -- worker.Pool above all --
+// can react to lease loss without importing a specific queue
+// implementation.
+var ErrLeaseLost = errors.New("queue: lease lost")
+
 // Queue is the interface workers and producers use to exchange jobs. A Queue
 // implementation is responsible for ordering ready jobs by priority and
 // respecting each job's scheduled RunAt time.

@@ -363,3 +363,24 @@ func TestEnqueueClearsLeaseBookkeeping(t *testing.T) {
 		t.Fatalf("rescheduled job still carries lease owner %q / expiry %d, want cleared", owner, expiry)
 	}
 }
+
+func TestLeaseLostErrorMatchesSentinel(t *testing.T) {
+	q := openLeasedQueue(t, Options{LeaseTTL: time.Nanosecond})
+
+	j := job.New("q", []byte("work"), job.WithMaxRetries(3))
+	if err := q.Enqueue(j); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if _, err := q.TryDequeue(); err != nil {
+		t.Fatalf("TryDequeue: %v", err)
+	}
+	if _, err := q.Recover(); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+
+	// A caller that does not import this package still needs to be able
+	// to tell lease loss from a database error.
+	if err := q.Heartbeat(j.ID); !errors.Is(err, queue.ErrLeaseLost) {
+		t.Fatalf("Heartbeat after recovery = %v, want it to match queue.ErrLeaseLost", err)
+	}
+}
