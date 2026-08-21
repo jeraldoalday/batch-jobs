@@ -150,6 +150,18 @@ func Apply(db *sql.DB, fsys fs.FS, dir string) error {
 	return nil
 }
 
+// applyOne runs one migration's statements and records it, atomically.
+//
+// The bookkeeping INSERT deliberately comes first, before any of the
+// migration's own statements. It is what makes concurrent Apply calls safe:
+// two processes starting against the same database file both read an empty
+// schema_migrations, so both try to apply migration N. The INSERT takes
+// SQLite's single write lock, so the loser blocks until the winner commits
+// and then fails on the primary key — at which point it can tell it lost
+// and skip the migration entirely. Running the statements first would mean
+// the loser executes them too, and statements like ALTER TABLE ADD COLUMN
+// (which have no IF NOT EXISTS form) fail outright rather than yielding to
+// the winner.
 func applyOne(db *sql.DB, m migration) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -157,20 +169,36 @@ func applyOne(db *sql.DB, m migration) error {
 	}
 	defer tx.Rollback()
 
+	if _, err := tx.Exec(
+		`INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`,
+		m.version, m.name, time.Now().UTC().UnixNano(),
+	); err != nil {
+		if isAlreadyRecorded(err) {
+			// Another process applied this migration while we were
+			// deciding to: its transaction won the write lock and
+			// committed. Nothing left for us to do.
+			return nil
+		}
+		return fmt.Errorf("record migration: %w", err)
+	}
+
 	for _, stmt := range splitStatements(m.sql) {
 		if _, err := tx.Exec(stmt); err != nil {
 			return fmt.Errorf("exec statement: %w", err)
 		}
 	}
 
-	if _, err := tx.Exec(
-		`INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`,
-		m.version, m.name, time.Now().UTC().UnixNano(),
-	); err != nil {
-		return fmt.Errorf("record migration: %w", err)
-	}
-
 	return tx.Commit()
+}
+
+// isAlreadyRecorded reports whether err is the primary-key violation raised
+// when schema_migrations already holds a row for this version. It is
+// matched on the driver's message so this package need not depend on
+// modernc.org/sqlite's concrete error type.
+func isAlreadyRecorded(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed") ||
+		strings.Contains(msg, "PRIMARY KEY constraint failed")
 }
 
 // splitStatements splits a migration file into individual statements on
