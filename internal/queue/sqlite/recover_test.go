@@ -340,3 +340,38 @@ func TestRecoverOnClosedQueue(t *testing.T) {
 		t.Fatalf("Heartbeat on a closed queue = %v, want queue.ErrClosed", err)
 	}
 }
+
+func TestEnqueueClearsLeaseBookkeeping(t *testing.T) {
+	q, err := Open(":memory:", Options{LeaseTTL: time.Minute, Owner: "worker-1"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { q.Close() })
+
+	j := job.New("q", []byte("work"), job.WithMaxRetries(3))
+	if err := q.Enqueue(j); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	claimed, err := q.TryDequeue()
+	if err != nil {
+		t.Fatalf("TryDequeue: %v", err)
+	}
+
+	// The worker fails the job and reschedules it, as worker.Pool does.
+	claimed.MarkFailed(time.Now().UTC(), errors.New("boom"), time.Millisecond)
+	if err := q.Enqueue(claimed); err != nil {
+		t.Fatalf("re-Enqueue: %v", err)
+	}
+
+	var (
+		owner  string
+		expiry int64
+	)
+	err = q.db.QueryRow(`SELECT owner, lease_expires_at FROM jobs WHERE id = ?`, j.ID).Scan(&owner, &expiry)
+	if err != nil {
+		t.Fatalf("read lease columns: %v", err)
+	}
+	if owner != "" || expiry != 0 {
+		t.Fatalf("rescheduled job still carries lease owner %q / expiry %d, want cleared", owner, expiry)
+	}
+}

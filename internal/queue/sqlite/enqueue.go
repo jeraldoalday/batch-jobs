@@ -14,6 +14,12 @@ import (
 // exists (e.g. a job being rescheduled after a failed attempt), overwrites
 // its mutable fields in place. CreatedAt is intentionally never updated by
 // the DO UPDATE clause so a job's original enqueue time is preserved.
+//
+// The lease columns are cleared rather than carried over: a job coming back
+// through Enqueue is no longer claimed by anyone, and leaving the previous
+// holder's owner and expiry on the row would both mislead an operator
+// reading it and leave a lapsed expiry sitting on a job that is not
+// running.
 const upsertQuery = `
 INSERT INTO jobs (` + jobColumns + `)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -28,7 +34,9 @@ ON CONFLICT(id) DO UPDATE SET
     updated_at      = excluded.updated_at,
     run_at          = excluded.run_at,
     timeout_ns      = excluded.timeout_ns,
-    idempotency_key = excluded.idempotency_key;
+    idempotency_key = excluded.idempotency_key,
+    owner           = '',
+    lease_expires_at = 0;
 `
 
 // idempotentMatchQuery finds an existing job sharing j's (queue,
