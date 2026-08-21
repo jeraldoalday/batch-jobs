@@ -44,6 +44,14 @@ type Pool struct {
 	// Defaults to DefaultScaleInterval. Ignored unless Scale.Max is set.
 	ScaleInterval time.Duration
 
+	// HeartbeatInterval is how often the pool extends the claim on a job
+	// it is running, for queues that implement Heartbeater. It defaults
+	// to a fraction of the queue's own lease TTL
+	// (DefaultHeartbeatDivisor), so tuning the TTL does not silently
+	// leave the heartbeat behind. Ignored entirely by queues that do not
+	// lease.
+	HeartbeatInterval time.Duration
+
 	// Backoff computes the delay before a failed job's next attempt.
 	// Defaults to ExponentialBackoff(time.Second, time.Minute) if unset.
 	Backoff BackoffFunc
@@ -176,9 +184,15 @@ func (p *Pool) loop(ctx, dequeueCtx context.Context, id int) {
 func (p *Pool) process(ctx context.Context, j *job.Job) {
 	start := time.Now()
 	p.Metrics.IncJobsInFlight(j.Queue)
-	attemptCtx, cancel := p.attemptContext(ctx, j)
+
+	// The claim is kept alive around the attempt, not just around the
+	// handler call, so the lease covers the whole time this worker is
+	// responsible for the job.
+	leaseCtx, stopHeartbeat := p.heartbeat(ctx, j)
+	attemptCtx, cancel := p.attemptContext(leaseCtx, j)
 	err := p.runHandler(attemptCtx, j)
 	cancel()
+	stopHeartbeat()
 	p.Metrics.DecJobsInFlight(j.Queue)
 	if err == nil {
 		j.MarkSucceeded(time.Now().UTC())
