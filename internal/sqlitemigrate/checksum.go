@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ErrChecksumMismatch is returned by Apply and Verify when a migration file
@@ -40,9 +41,21 @@ func ensureChecksumColumn(db *sql.DB) error {
 		return nil
 	}
 	if _, err := db.Exec(`ALTER TABLE schema_migrations ADD COLUMN checksum TEXT NOT NULL DEFAULT ''`); err != nil {
+		if isDuplicateColumn(err) {
+			// Another process ran the same ALTER between our check and
+			// our attempt. The column exists either way, which is all
+			// this function promises.
+			return nil
+		}
 		return fmt.Errorf("add schema_migrations.checksum: %w", err)
 	}
 	return nil
+}
+
+// isDuplicateColumn reports whether err is SQLite's complaint that an
+// ALTER TABLE ADD COLUMN names a column the table already has.
+func isDuplicateColumn(err error) bool {
+	return strings.Contains(err.Error(), "duplicate column name")
 }
 
 // hasColumn reports whether table already has a column named column.
