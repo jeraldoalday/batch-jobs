@@ -29,6 +29,8 @@ type Metrics struct {
 	poolWorkers     *prometheus.GaugeVec
 	poolScaleEvents *prometheus.CounterVec
 
+	jobsRecovered *prometheus.CounterVec
+
 	scheduleFires  prometheus.Counter
 	scheduleErrors prometheus.Counter
 	tickDuration   prometheus.Histogram
@@ -67,6 +69,11 @@ func New(reg *prometheus.Registry) *Metrics {
 			Name:      "pool_scale_events_total",
 			Help:      "Total number of autoscaling decisions applied to the pool, labeled by direction (up, down).",
 		}, []string{"pool", "direction"}),
+		jobsRecovered: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "jobs_recovered_total",
+			Help:      "Total number of orphaned jobs reclaimed after their worker's lease expired, labeled by outcome (requeued, dead).",
+		}, []string{"outcome"}),
 		scheduleFires: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "schedule_fires_total",
@@ -85,7 +92,7 @@ func New(reg *prometheus.Registry) *Metrics {
 		}),
 	}
 	reg.MustRegister(m.jobsProcessed, m.jobDuration, m.jobsInFlight, m.poolWorkers, m.poolScaleEvents,
-		m.scheduleFires, m.scheduleErrors, m.tickDuration)
+		m.jobsRecovered, m.scheduleFires, m.scheduleErrors, m.tickDuration)
 	return m
 }
 
