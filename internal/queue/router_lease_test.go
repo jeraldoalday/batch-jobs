@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/jeraldoalday/batch-jobs/internal/job"
 )
 
 // fakeLeasedQueue is a Queue that leases claims for exactly one job ID,
@@ -132,5 +134,66 @@ func TestRouterLeaseTTLTakesTheShortest(t *testing.T) {
 	// the strictest route's claims lapse mid-job.
 	if got, want := r.LeaseTTL(), 10*time.Second; got != want {
 		t.Fatalf("LeaseTTL = %v, want %v (the shortest leasing route)", got, want)
+	}
+}
+
+// completingQueue records the jobs completed through it.
+type completingQueue struct {
+	Queue
+
+	completed []string
+	err       error
+}
+
+func (q *completingQueue) Complete(j *job.Job) error {
+	if q.err != nil {
+		return q.err
+	}
+	q.completed = append(q.completed, j.ID)
+	return nil
+}
+
+func TestRouterCompleteRoutesByQueueName(t *testing.T) {
+	emails := &completingQueue{Queue: NewMemory()}
+	reports := &completingQueue{Queue: NewMemory()}
+	r := newLeasingRouter(t,
+		Route{Name: "emails", Queue: emails},
+		Route{Name: "reports", Queue: reports},
+	)
+
+	j := job.New("reports", nil)
+	j.MarkSucceeded(time.Now().UTC())
+	if err := r.Complete(j); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if len(reports.completed) != 1 || reports.completed[0] != j.ID {
+		t.Fatalf("reports route completed %v, want [%s]", reports.completed, j.ID)
+	}
+	if len(emails.completed) != 0 {
+		t.Fatalf("emails route completed %v, want nothing", emails.completed)
+	}
+}
+
+func TestRouterCompleteIgnoresNonCompletingRoutes(t *testing.T) {
+	// queue.Memory drops a job once it is claimed, so there is nothing to
+	// record: completing through such a route must succeed quietly rather
+	// than making the worker care what kind of queue it drew from.
+	r := newLeasingRouter(t, Route{Name: "emails", Queue: NewMemory()})
+
+	j := job.New("emails", nil)
+	j.MarkSucceeded(time.Now().UTC())
+	if err := r.Complete(j); err != nil {
+		t.Fatalf("Complete over a non-completing route = %v, want nil", err)
+	}
+}
+
+func TestRouterCompleteWithoutARoute(t *testing.T) {
+	r := newLeasingRouter(t, Route{Name: "emails", Queue: &completingQueue{Queue: NewMemory()}})
+
+	j := job.New("nowhere", nil)
+	j.MarkSucceeded(time.Now().UTC())
+	if err := r.Complete(j); !errors.Is(err, ErrNoRoute) {
+		t.Fatalf("Complete for an unrouted queue = %v, want ErrNoRoute", err)
 	}
 }
