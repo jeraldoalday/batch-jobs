@@ -53,19 +53,7 @@ SELECT COUNT(*) FROM jobs
 WHERE status = 'running' AND lease_expires_at != 0 AND lease_expires_at <= ?;
 `
 
-// Recovery summarizes one recovery pass.
-type Recovery struct {
-	// Requeued is the number of orphaned jobs put back in the queue for
-	// another attempt.
-	Requeued int
-
-	// DeadLettered is the number of orphaned jobs that had no retries
-	// left and were moved to the dead-letter state instead.
-	DeadLettered int
-}
-
-// Total is how many orphaned jobs the pass dealt with, either way.
-func (r Recovery) Total() int { return r.Requeued + r.DeadLettered }
+var _ queue.Recoverer = (*Queue)(nil)
 
 // Recover reclaims jobs whose lease has expired: their worker claimed them
 // and then died without reporting an outcome. Each is either put back in
@@ -77,19 +65,19 @@ func (r Recovery) Total() int { return r.Requeued + r.DeadLettered }
 // having actually lapsed, so a job whose worker is alive and heartbeating
 // is never touched, and two racing reapers cannot both reclaim the same
 // job.
-func (q *Queue) Recover() (Recovery, error) {
+func (q *Queue) Recover() (queue.Recovery, error) {
 	q.mu.Lock()
 	closed := q.closed
 	q.mu.Unlock()
 	if closed {
-		return Recovery{}, queue.ErrClosed
+		return queue.Recovery{}, queue.ErrClosed
 	}
 
 	now := time.Now().UTC().UnixNano()
 
 	tx, err := q.db.Begin()
 	if err != nil {
-		return Recovery{}, fmt.Errorf("sqlite: recover: %w", err)
+		return queue.Recovery{}, fmt.Errorf("sqlite: recover: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -98,16 +86,16 @@ func (q *Queue) Recover() (Recovery, error) {
 	// over their retry limit and retire them without ever re-running them.
 	dead, err := affected(tx.Exec(deadLetterExpiredQuery, now))
 	if err != nil {
-		return Recovery{}, fmt.Errorf("sqlite: recover: dead-letter expired: %w", err)
+		return queue.Recovery{}, fmt.Errorf("sqlite: recover: dead-letter expired: %w", err)
 	}
 
 	requeued, err := affected(tx.Exec(requeueExpiredQuery, now))
 	if err != nil {
-		return Recovery{}, fmt.Errorf("sqlite: recover: requeue expired: %w", err)
+		return queue.Recovery{}, fmt.Errorf("sqlite: recover: requeue expired: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return Recovery{}, fmt.Errorf("sqlite: recover: commit: %w", err)
+		return queue.Recovery{}, fmt.Errorf("sqlite: recover: commit: %w", err)
 	}
 
 	if requeued > 0 {
@@ -119,7 +107,7 @@ func (q *Queue) Recover() (Recovery, error) {
 		q.mu.Unlock()
 	}
 
-	return Recovery{Requeued: requeued, DeadLettered: dead}, nil
+	return queue.Recovery{Requeued: requeued, DeadLettered: dead}, nil
 }
 
 // ExpiredLeases returns how many claims have lapsed without yet being
