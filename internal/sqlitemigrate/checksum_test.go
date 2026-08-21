@@ -2,6 +2,7 @@ package sqlitemigrate
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -133,5 +134,45 @@ func TestApplyRejectsDuplicateVersions(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("%d table(s) created despite the duplicate-version error, want 0", count)
+	}
+}
+
+func TestApplyDetectsTwoSetsSharingOneDatabase(t *testing.T) {
+	db := openRaw(t)
+
+	jobs := mapMigrations(map[string]string{"0001_jobs.sql": widgetsSQL})
+	if err := Apply(db, jobs, "migrations"); err != nil {
+		t.Fatalf("Apply jobs migrations: %v", err)
+	}
+
+	// A second migration set aimed at the same file: its version 1 is a
+	// different file entirely, but schema_migrations has no idea the two
+	// sets are distinct.
+	schedules := mapMigrations(map[string]string{
+		"0001_schedules.sql": `CREATE TABLE IF NOT EXISTS schedules (id INTEGER PRIMARY KEY);`,
+	})
+	err := Apply(db, schedules, "migrations")
+	if !errors.Is(err, ErrVersionNameMismatch) {
+		t.Fatalf("Apply of a second migration set = %v, want ErrVersionNameMismatch", err)
+	}
+	if !strings.Contains(err.Error(), "0001_jobs.sql") || !strings.Contains(err.Error(), "0001_schedules.sql") {
+		t.Errorf("error should name both files, got: %v", err)
+	}
+}
+
+func TestStatusReportsANameCollisionAsDrift(t *testing.T) {
+	db := openRaw(t)
+	if err := Apply(db, mapMigrations(map[string]string{"0001_jobs.sql": widgetsSQL}), "migrations"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	records, err := Status(db, mapMigrations(map[string]string{"0001_schedules.sql": widgetsSQL}), "migrations")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	// Same contents, different file: the checksum alone would call this
+	// applied, which would let a foreign migration set look up to date.
+	if records[0].State != StateDrifted {
+		t.Fatalf("state = %q, want drifted for a version applied under another name", records[0].State)
 	}
 }

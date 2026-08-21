@@ -93,7 +93,7 @@ func Status(db *sql.DB, fsys fs.FS, dir string) ([]Record, error) {
 		}
 
 		state := StateApplied
-		if row.checksum != "" && row.checksum != checksum(m.sql) {
+		if row.name != m.name || (row.checksum != "" && row.checksum != checksum(m.sql)) {
 			state = StateDrifted
 		}
 		records = append(records, Record{

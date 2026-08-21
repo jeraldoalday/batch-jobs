@@ -24,6 +24,14 @@ import (
 // half-applied.
 var ErrDuplicateVersion = errors.New("sqlitemigrate: duplicate migration version")
 
+// ErrVersionNameMismatch is returned when a version recorded in the
+// database was applied from a differently named file than the one the
+// binary holds. The usual cause is two migration sets -- the jobs schema
+// and the schedules schema, say -- pointed at the same database file,
+// where they share one schema_migrations table and silently claim each
+// other's version numbers.
+var ErrVersionNameMismatch = errors.New("sqlitemigrate: migration version applied under a different name")
+
 // migrationsTable tracks which migrations have already been applied so
 // Apply is safe to run every time a store is opened.
 const migrationsTable = `
@@ -121,7 +129,7 @@ func Apply(db *sql.DB, fsys fs.FS, dir string) error {
 		return err
 	}
 
-	applied, err := appliedChecksums(db)
+	applied, err := appliedRows(db)
 	if err != nil {
 		return err
 	}
@@ -133,7 +141,10 @@ func Apply(db *sql.DB, fsys fs.FS, dir string) error {
 
 	for _, m := range migrations {
 		if recorded, ok := applied[m.version]; ok {
-			if err := verifyChecksum(db, m, recorded); err != nil {
+			if err := checkName(m, recorded); err != nil {
+				return err
+			}
+			if err := verifyChecksum(db, m, recorded.checksum); err != nil {
 				return err
 			}
 			continue
@@ -154,31 +165,18 @@ func ensureTable(db *sql.DB) error {
 	return ensureChecksumColumn(db)
 }
 
-// appliedChecksums returns the checksum recorded for each already-applied
-// version. A version present in the map with an empty string was applied
-// before this package recorded checksums.
-func appliedChecksums(db *sql.DB) (map[int]string, error) {
-	rows, err := db.Query(`SELECT version, checksum FROM schema_migrations`)
-	if err != nil {
-		return nil, fmt.Errorf("read applied migrations: %w", err)
+// checkName reports whether a recorded version was applied from the file
+// the binary is now holding. Catching this before the checksum comparison
+// matters because the checksum error ("this file changed") sends an
+// operator looking for an edit that never happened, when the real problem
+// is that something else is using the same database.
+func checkName(m migration, recorded appliedRow) error {
+	if recorded.name == m.name {
+		return nil
 	}
-	defer rows.Close()
-
-	applied := make(map[int]string)
-	for rows.Next() {
-		var (
-			version int
-			sum     string
-		)
-		if err := rows.Scan(&version, &sum); err != nil {
-			return nil, fmt.Errorf("scan applied migration: %w", err)
-		}
-		applied[version] = sum
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return applied, nil
+	return fmt.Errorf("%w: version %d was applied as %s, but this set has %s "+
+		"(are two migration sets sharing one database file?)",
+		ErrVersionNameMismatch, m.version, recorded.name, m.name)
 }
 
 // applyOne runs one migration's statements and records it, atomically.
