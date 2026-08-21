@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"io/fs"
 
 	"github.com/jeraldoalday/batch-jobs/internal/sqlitemigrate"
 	"github.com/jeraldoalday/batch-jobs/internal/sqlitex"
@@ -17,6 +18,15 @@ import (
 //
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
+
+// MigrationsDir is the path, within the FS returned by Migrations, holding
+// this package's migration files.
+const MigrationsDir = "migrations"
+
+// Migrations exposes the embedded migration set so tooling outside this
+// package can inspect and apply exactly what Open would apply. See
+// queue/sqlite.Migrations for the same reasoning.
+func Migrations() fs.FS { return migrationsFS }
 
 // Store is a SQLite-backed, durable implementation of schedule.Store.
 // Multiple Store instances (in the same process or different ones) may
