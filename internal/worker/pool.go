@@ -198,6 +198,7 @@ func (p *Pool) process(ctx context.Context, j *job.Job) {
 		j.MarkSucceeded(time.Now().UTC())
 		duration := time.Since(start)
 		p.Metrics.ObserveJob(j.Queue, j.Status, duration)
+		p.complete(j)
 		p.Logger.Debug("worker: job succeeded", "job_id", j.ID, "queue", j.Queue, "duration", duration)
 		return
 	}
@@ -205,6 +206,7 @@ func (p *Pool) process(ctx context.Context, j *job.Job) {
 	if isPermanent(err) {
 		j.MarkFailedPermanently(time.Now().UTC(), err)
 		p.Metrics.ObserveJob(j.Queue, j.Status, time.Since(start))
+		p.complete(j)
 		p.Logger.Warn("worker: job failed permanently", "job_id", j.ID, "queue", j.Queue, "error", err)
 		return
 	}
@@ -221,6 +223,7 @@ func (p *Pool) process(ctx context.Context, j *job.Job) {
 			p.Logger.Debug("worker: job scheduled for retry", "job_id", j.ID, "queue", j.Queue, "attempt", j.RetryCount, "run_at", j.RunAt)
 		}
 	case job.StatusDead:
+		p.complete(j)
 		p.Logger.Warn("worker: job exhausted retries", "job_id", j.ID, "queue", j.Queue, "error", err)
 		if p.DeadLetter != nil {
 			j.RunAt = time.Now().UTC()
