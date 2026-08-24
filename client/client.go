@@ -94,11 +94,11 @@ func WithUserAgent(ua string) Option {
 	}
 }
 
-// WithTimeout bounds each request, overriding DefaultTimeout. It applies to
-// the whole request/response exchange, so it must not be combined with
-// Events: following a stream is meant to outlive any single timeout, and
-// Events documents how it opts out.
-func WithTimeout(d time.Duration) Option {
+// WithRequestTimeout bounds each request, overriding DefaultTimeout. It
+// applies to the whole request/response exchange, so it must not be
+// combined with Events: following a stream is meant to outlive any single
+// timeout, and Events documents how it opts out.
+func WithRequestTimeout(d time.Duration) Option {
 	return func(c *Client) {
 		if d > 0 {
 			c.httpc.Timeout = d
