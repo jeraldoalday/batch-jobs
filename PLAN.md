@@ -133,8 +133,34 @@
   `POST /v1/recover`; `batchjobs_jobs_recovered_total` and
   `batchjobs_expired_leases` metrics
 
-## Day 12 — API polish
-- Public API ergonomics, examples, godoc
+## Day 12 — API polish (done)
+- `batchjobs` (module root): the first public package. An `Engine` wraps a
+  durable queue, a worker pool, and the recovery sweep behind one `Open`
+  call, with `Config` covering pool size, autoscaling bounds, retry
+  backoff, lease TTL, sweep cadence, logger, and metrics registry.
+  Genuine public `Job`/`Status`/`Priority` types rather than aliases for
+  the internal ones, whose lifecycle mutators only the engine may call
+- `batchjobs`: `Enqueue`/`EnqueueJSON`/`EnqueueResult`, `Get`, `List`,
+  `Cancel`, `RetryJob`, `Stats` (with derived `Active`/`Backlog`/
+  `Failing`), `Len`, `Recover`, `ExpiredLeases`, `Permanent`/
+  `IsPermanent`, the error sentinels, and `APIHandler`/`MetricsHandler`
+  for mounting the REST API, dashboard, and scrape endpoint on a
+  listener the application already has
+- `client`: a standalone Go client for the HTTP API — enqueue with
+  idempotency keys, get/list/cancel/retry, stats, recovery, health, and
+  `Events`/`Watch` over the SSE stats stream. `*Error` carries the
+  request, status, server message, and `Retry-After`, unwrapping to
+  sentinels; `Temporary` draws the line between a retryable request and
+  an answer
+- `worker.Mux`: per-queue handler dispatch, the consumer-side counterpart
+  to `queue.Router`; an unhandled queue fails permanently rather than
+  spending its retries on code that does not exist
+- Bug fixes: the API's rate limiter grew a bucket per client IP forever
+  (now evicted once idle long enough to have refilled, which is
+  behaviour-preserving); `EventStream.Close` raced with `Next` on the
+  flag it sets
+- Runnable godoc examples for both public packages, a rewritten README
+  quick start, and a CHANGELOG
 
 ## Day 13 — Performance
 - Load testing, benchmarking, tuning
