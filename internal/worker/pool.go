@@ -203,7 +203,7 @@ func (p *Pool) process(ctx context.Context, j *job.Job) {
 		return
 	}
 
-	if isPermanent(err) {
+	if IsPermanent(err) {
 		j.MarkFailedPermanently(time.Now().UTC(), err)
 		p.Metrics.ObserveJob(j.Queue, j.Status, time.Since(start))
 		p.complete(j)

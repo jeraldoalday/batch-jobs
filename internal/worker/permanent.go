@@ -26,9 +26,12 @@ func (e *permanentError) Error() string { return e.err.Error() }
 
 func (e *permanentError) Unwrap() error { return e.err }
 
-// isPermanent reports whether err (or something it wraps, via errors.As) was
-// produced by Permanent.
-func isPermanent(err error) bool {
+// IsPermanent reports whether err, or anything it wraps, was produced by
+// Permanent. The pool uses it to decide a failed job's fate; it is
+// exported so handler middleware -- something that logs, or retries, or
+// converts errors around an inner handler -- can tell a permanent failure
+// from a transient one without knowing how the marker is spelled.
+func IsPermanent(err error) bool {
 	var pe *permanentError
 	return errors.As(err, &pe)
 }

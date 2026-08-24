@@ -140,14 +140,14 @@ func TestPoolPermanentErrorSkipsRetryAndDeadLetter(t *testing.T) {
 func TestIsPermanentUnwraps(t *testing.T) {
 	base := errors.New("boom")
 	wrapped := Permanent(base)
-	if !isPermanent(wrapped) {
-		t.Error("isPermanent(Permanent(err)) = false, want true")
+	if !IsPermanent(wrapped) {
+		t.Error("IsPermanent(Permanent(err)) = false, want true")
 	}
-	if isPermanent(base) {
-		t.Error("isPermanent(err) = true, want false for an unwrapped error")
+	if IsPermanent(base) {
+		t.Error("IsPermanent(err) = true, want false for an unwrapped error")
 	}
-	if isPermanent(nil) {
-		t.Error("isPermanent(nil) = true, want false")
+	if IsPermanent(nil) {
+		t.Error("IsPermanent(nil) = true, want false")
 	}
 }
 

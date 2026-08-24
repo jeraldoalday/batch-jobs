@@ -58,7 +58,7 @@ func TestMuxUnregisteredQueueIsPermanent(t *testing.T) {
 	}
 	// A job nothing knows how to run must not be retried: the pool has to
 	// see this as permanent, or the job burns its attempts on nothing.
-	if !isPermanent(err) {
+	if !IsPermanent(err) {
 		t.Errorf("Serve error = %v, want a Permanent error", err)
 	}
 	// The queue name belongs in the message; without it an operator
