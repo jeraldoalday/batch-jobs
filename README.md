@@ -12,9 +12,10 @@ disk-backed queue when needed.
 
 Early development. The core queue and job model, both storage backends,
 scheduling, observability, an HTTP API, a dashboard, the first scaling
-controls (multi-queue routing, pool autoscaling, backpressure), and
-persistence hardening (job leases, crash recovery, migration tooling) are
-in place. See commit history for progress.
+controls (multi-queue routing, pool autoscaling, backpressure), persistence
+hardening (job leases, crash recovery, migration tooling), and a public Go
+API (the `batchjobs` engine and the `client` package) are in place. See
+commit history for progress.
 
 ## Goals
 
@@ -22,6 +23,132 @@ in place. See commit history for progress.
 - Pluggable storage backends (in-memory, SQLite)
 - At-least-once delivery with configurable retry/backoff
 - Observable: structured logs, metrics, and a simple dashboard
+
+## Quick start
+
+The `batchjobs` package is the embedded engine: a durable queue, a pool of
+workers, and the recovery sweep that reclaims jobs whose worker died holding
+them. Producing and consuming happen in the same process, so there is no
+broker to run.
+
+```go
+engine, err := batchjobs.Open(batchjobs.Config{DB: "jobs.db", Workers: 8})
+if err != nil {
+    log.Fatal(err)
+}
+defer engine.Close()
+
+engine.Handle("emails", func(ctx context.Context, j *batchjobs.Job) error {
+    var msg Message
+    if err := j.Decode(&msg); err != nil {
+        // A payload that will not parse now will not parse on a retry.
+        return batchjobs.Permanent(err)
+    }
+    return send(ctx, msg)
+})
+
+if err := engine.Start(ctx); err != nil {
+    log.Fatal(err)
+}
+defer engine.Stop()
+
+_, err = engine.EnqueueJSON(ctx, "emails", Message{To: "a@example.com"},
+    batchjobs.WithMaxRetries(3),
+    batchjobs.WithTimeout(30*time.Second),
+)
+```
+
+Handlers are registered per queue; a job whose queue has no handler fails
+permanently rather than burning its retries on code that does not exist.
+Jobs are durable the moment `Enqueue` returns, so an `Engine` opened against
+an existing database picks up where the last process left off.
+
+The lifecycle is deliberately split. `Open` returns a usable engine before
+`Start`, since a producer-only process needs to enqueue and inspect without
+running workers at all. `Stop` drains in-flight handlers without closing the
+database, so jobs can still be recorded after the workers are gone. `Close`
+releases it.
+
+### Inspecting and steering work
+
+```go
+stats, err := engine.Stats(ctx)          // per-status counts
+fmt.Println(stats.Backlog(), stats.Failing())
+
+dead, err := engine.List(ctx, batchjobs.StatusDead, 100)
+for _, j := range dead {
+    log.Printf("%s failed after %d attempts: %s", j.ID, j.Attempt(), j.LastError)
+    engine.RetryJob(ctx, j.ID)           // back to pending, counters cleared
+}
+
+engine.Cancel(ctx, id)                   // a job a worker has not claimed yet
+engine.Recover(ctx)                      // reclaim a dead host's jobs now
+```
+
+`Permanent(err)` is the one piece of handler vocabulary worth learning: it
+separates *this job is wrong* (`StatusFailed`, worth a human reading) from
+*we could not get through* (`StatusDead`, worth retrying once whatever broke
+is fixed). Without it, a malformed payload spends every retry it has before
+anyone hears about it.
+
+### Serving the queue over HTTP
+
+`Engine.APIHandler` mounts the same REST API and dashboard on a listener the
+application already has, so producers in other processes reach the same jobs
+the embedded workers are running:
+
+```go
+mux.Handle("/jobs/", http.StripPrefix("/jobs", engine.APIHandler(batchjobs.APIOptions{
+    AuthToken: os.Getenv("JOBS_API_KEY"),
+    Dashboard: true,
+})))
+mux.Handle("/metrics", engine.MetricsHandler())
+```
+
+## Go client
+
+The `client` package talks to any batch-jobs server — one run by
+`cmd/batch-jobs-server`, or an application's own `Engine.APIHandler`. It
+shares no types with the engine, so importing it costs nothing but the
+standard library.
+
+```go
+c, err := client.New("https://jobs.internal", client.WithAPIKey(key))
+if err != nil {
+    log.Fatal(err)
+}
+
+j, err := c.EnqueueJSON(ctx, "emails", msg,
+    client.WithMaxRetries(3),
+    client.WithIdempotencyKey(orderID),
+)
+```
+
+Failures are an unwrappable `*client.Error` carrying the request, status,
+the server's message, and its `Retry-After` hint, with sentinels for the
+outcomes worth branching on (`ErrNotFound`, `ErrConflict`, `ErrQueueFull`,
+`ErrRateLimited`, `ErrUnauthorized`, `ErrInvalidRequest`, `ErrUnsupported`,
+`ErrServer`). `client.Temporary(err)` draws the line between a request worth
+repeating unchanged and an answer:
+
+```go
+if _, err := c.Enqueue(ctx, "emails", payload); err != nil {
+    if !client.Temporary(err) {
+        return err                       // 400, 404, 501: an answer
+    }
+    time.Sleep(client.RetryAfter(err, time.Second))
+}
+```
+
+`Client.Watch` follows the server's live stats stream — the same SSE feed
+the dashboard's tiles are driven by — so a monitor does not have to poll:
+
+```go
+err := c.Watch(ctx, func(stats client.Stats) error {
+    log.Printf("%s (backlog %d)", stats, stats.Backlog())
+    return nil
+})
+```
 
 ## Storage backends
 
@@ -189,6 +316,29 @@ r, err := queue.NewRouter([]queue.Route{
     {Name: "emails", Queue: q.Bind("emails"), Weight: 1},
 })
 ```
+
+### Per-queue handlers
+
+`worker.Mux` is the consumer-side counterpart to `queue.Router`: it
+dispatches each job to the handler registered for its queue, so one pool can
+serve several logical queues without a pool (and its idle goroutines) per
+queue, or a hand-written switch on `j.Queue`.
+
+```go
+mux := worker.NewMux()
+mux.Handle("emails", sendEmail)
+mux.Handle("reports", buildReport)
+mux.Fallback(park)                       // optional catch-all
+
+pool := &worker.Pool{Queue: q, Handler: mux.Serve}
+```
+
+Duplicate registration panics, the way `net/http`'s does: two packages both
+claiming `"emails"` is a bug worth surfacing at startup rather than as jobs
+quietly running the wrong code. A job whose queue has neither a handler nor a
+fallback fails with `ErrNoHandler` wrapped in `Permanent` — retrying cannot
+make code appear, so the attempts would only delay someone noticing.
+`Engine.Handle` is this, wired up for you.
 
 ### Dynamic pool sizing
 
