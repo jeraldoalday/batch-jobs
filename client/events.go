@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 )
 
 // maxEventLine bounds a single Server-Sent Events line. Stats frames are a
@@ -41,7 +42,12 @@ type EventStream struct {
 	body    io.ReadCloser
 	scanner *bufio.Scanner
 	cancel  context.CancelFunc
-	closed  bool
+
+	// closed is atomic because Close is documented as callable from
+	// another goroutine to unblock a parked Next, which means the two
+	// genuinely do touch this field concurrently -- the one piece of
+	// state on a stream that is not owned by the reading goroutine.
+	closed atomic.Bool
 }
 
 // Events opens the server's stats stream. The server pushes a snapshot
@@ -84,7 +90,7 @@ func (c *Client) Events(ctx context.Context) (*EventStream, error) {
 // called -- and the underlying error otherwise. A cancelled context surfaces
 // as that context's error.
 func (s *EventStream) Next() (Stats, error) {
-	if s.closed {
+	if s.closed.Load() {
 		return nil, io.EOF
 	}
 
@@ -120,7 +126,7 @@ func (s *EventStream) Next() (Stats, error) {
 	}
 
 	if err := s.scanner.Err(); err != nil {
-		if s.closed || errors.Is(err, context.Canceled) {
+		if s.closed.Load() || errors.Is(err, context.Canceled) {
 			return nil, io.EOF
 		}
 		return nil, fmt.Errorf("client: read stats event: %w", err)
@@ -132,10 +138,11 @@ func (s *EventStream) Next() (Stats, error) {
 // more than once, and safe to call from another goroutine to unblock a Next
 // that is waiting on a server with nothing to say.
 func (s *EventStream) Close() error {
-	if s.closed {
+	// The swap makes Close idempotent and keeps a concurrent pair of
+	// calls from both closing the body.
+	if !s.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	s.closed = true
 	s.cancel()
 	return s.body.Close()
 }
