@@ -30,6 +30,13 @@ type Reaper struct {
 	// Interval is how often to sweep. Defaults to DefaultReapInterval.
 	Interval time.Duration
 
+	// OptimizeInterval is how often the reaper refreshes the table
+	// statistics the query planner uses to choose a dequeue index,
+	// defaulting to DefaultOptimizeInterval. A negative value turns the
+	// refresh off, leaving statistics to whatever Open seeded; see
+	// Queue.Optimize for what that costs.
+	OptimizeInterval time.Duration
+
 	// Logger is used for operational logging. Defaults to slog.Default().
 	Logger *slog.Logger
 
@@ -85,6 +92,15 @@ func (r *Reaper) loop(ctx context.Context) {
 	ticker := time.NewTicker(r.Interval)
 	defer ticker.Stop()
 
+	// Statistics maintenance rides along on the reaper because it is the
+	// one background loop every process running this queue already has,
+	// and because both are the same kind of chore: cheap, idempotent, and
+	// harmless to run from several processes at once. It gets its own
+	// ticker rather than a counter of sweeps so that tuning the reap
+	// interval does not silently retune it as well.
+	optimize := newOptionalTicker(r.OptimizeInterval, DefaultOptimizeInterval)
+	defer optimize.Stop()
+
 	r.sweep()
 
 	for {
@@ -93,7 +109,39 @@ func (r *Reaper) loop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			r.sweep()
+		case <-optimize.C:
+			if err := r.Queue.Optimize(); err != nil {
+				r.Logger.Warn("sqlite: statistics refresh failed", "error", err)
+			}
 		}
+	}
+}
+
+// optionalTicker is a time.Ticker whose channel may be nil, so a disabled
+// periodic task costs a select case that never fires rather than a
+// separate code path.
+type optionalTicker struct {
+	C      <-chan time.Time
+	ticker *time.Ticker
+}
+
+// newOptionalTicker returns a ticker at interval, or at fallback when
+// interval is zero, or a never-firing one when interval is negative.
+func newOptionalTicker(interval, fallback time.Duration) optionalTicker {
+	if interval < 0 {
+		return optionalTicker{}
+	}
+	if interval == 0 {
+		interval = fallback
+	}
+	t := time.NewTicker(interval)
+	return optionalTicker{C: t.C, ticker: t}
+}
+
+// Stop releases the underlying ticker, if there is one.
+func (t optionalTicker) Stop() {
+	if t.ticker != nil {
+		t.ticker.Stop()
 	}
 }
 

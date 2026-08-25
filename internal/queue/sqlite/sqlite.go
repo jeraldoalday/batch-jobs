@@ -77,13 +77,23 @@ func Open(path string, opts ...Options) (*Queue, error) {
 		}
 	}
 
-	return &Queue{
+	q := &Queue{
 		db:           db,
 		changed:      make(chan struct{}),
 		pollInterval: pollInterval,
 		leaseTTL:     leaseTTL,
 		owner:        owner,
-	}, nil
+	}
+
+	// Statistics are seeded here rather than left to the first PRAGMA
+	// optimize, so a process opening an already-populated queue starts on
+	// the right dequeue plan instead of earning it after the fact.
+	if err := analyzeOnOpen(q); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return q, nil
 }
 
 // LeaseTTL returns how long claims made by this Queue are good for without
