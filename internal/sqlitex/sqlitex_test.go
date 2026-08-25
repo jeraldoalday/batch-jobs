@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -265,7 +266,7 @@ func TestIsBusy(t *testing.T) {
 // which call lands on which is a matter of when database/sql happened to
 // open connections. OpenWith now pins such a database to one connection.
 func TestInMemoryDatabaseIsSharedAcrossThePool(t *testing.T) {
-	for _, path := range []string{":memory:", "", "file:private?mode=memory"} {
+	for _, path := range []string{":memory:", "file:private?mode=memory"} {
 		t.Run(path, func(t *testing.T) {
 			db, err := OpenWith(path, Options{MaxOpenConns: 4})
 			if err != nil {
@@ -315,7 +316,6 @@ func TestInMemoryDatabaseIsSharedAcrossThePool(t *testing.T) {
 func TestIsPrivateMemory(t *testing.T) {
 	tests := map[string]bool{
 		":memory:":                            true,
-		"":                                    true,
 		"file:x?mode=memory":                  true,
 		"file:x?mode=memory&cache=shared":     false,
 		"file:x?cache=shared&mode=memory":     false,
@@ -341,5 +341,29 @@ func TestSharedCacheMemoryKeepsItsPool(t *testing.T) {
 
 	if got := db.Stats().MaxOpenConnections; got != 3 {
 		t.Errorf("MaxOpenConnections = %d, want 3", got)
+	}
+}
+
+// TestOpenRejectsAnEmptyPath guards against the driver taking the settings
+// query string as a filename and creating a file named after it in the
+// working directory, which is what an empty path used to do.
+func TestOpenRejectsAnEmptyPath(t *testing.T) {
+	db, err := Open("")
+	if err == nil {
+		db.Close()
+		t.Fatal("Open(\"\") succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), MemoryPath) {
+		t.Errorf("error %q does not point at the ephemeral-database spelling", err)
+	}
+
+	entries, rerr := os.ReadDir(".")
+	if rerr != nil {
+		t.Fatalf("read working directory: %v", rerr)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "?") {
+			t.Errorf("Open(\"\") created %q in the working directory", entry.Name())
+		}
 	}
 }

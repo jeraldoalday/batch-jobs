@@ -170,6 +170,17 @@ func Open(path string) (*sql.DB, error) {
 // give each connection in the pool a separate, empty database. See
 // isPrivateMemory.
 func OpenWith(path string, opts Options) (*sql.DB, error) {
+	// An empty path is rejected rather than passed through. SQLite reads
+	// one as "a private temporary database", but that is not what happens
+	// here: the settings below are appended as a query string, and a bare
+	// query string with no filename in front of it is not a URI, so the
+	// driver takes the whole thing as a literal filename and silently
+	// creates a file called "?_busy_timeout=5000&_journal_mode=WAL&..."
+	// in the working directory. Say so instead.
+	if path == "" {
+		return nil, fmt.Errorf("sqlitex: open: no database path (use %q for an ephemeral database)", MemoryPath)
+	}
+
 	opts = opts.resolve()
 	if isPrivateMemory(path) {
 		opts.MaxOpenConns = memoryPoolSize

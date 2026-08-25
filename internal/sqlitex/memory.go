@@ -22,7 +22,7 @@ const MemoryPath = ":memory:"
 // arrangement under which several connections do share one in-memory
 // database.
 func isPrivateMemory(path string) bool {
-	if path == MemoryPath || path == "" {
+	if path == MemoryPath {
 		return true
 	}
 	if !strings.Contains(path, "mode=memory") {
