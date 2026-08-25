@@ -36,8 +36,11 @@ type Config struct {
 	// maximum throughput rather than its behaviour at a chosen load.
 	Rate float64
 
-	// Duration bounds the run's wall-clock length. Zero means unbounded,
-	// in which case Jobs or context cancellation must stop it.
+	// Duration bounds the *measured* window: Warmup is spent on top of
+	// it, so a run configured with both takes Warmup+Duration of
+	// wall-clock time and reports on the last Duration of it. Zero means
+	// unbounded, in which case Jobs or context cancellation must stop
+	// the run.
 	Duration time.Duration
 
 	// Jobs bounds the run's total operation count. Zero means unbounded.
@@ -156,9 +159,10 @@ func Run(ctx context.Context, cfg Config, submit SubmitFunc) (Result, error) {
 	runCtx := ctx
 	var cancel context.CancelFunc
 	if cfg.Duration > 0 {
-		// The deadline covers warmup as well as the measured window, so
-		// a run's wall-clock length is what was asked for rather than
-		// warmup plus what was asked for.
+		// Duration is the measured window, so the deadline is warmup on
+		// top of it: asking for thirty seconds of measurement after a
+		// five second warmup should give thirty seconds of measurement,
+		// not twenty-five.
 		runCtx, cancel = context.WithTimeout(ctx, cfg.Warmup+cfg.Duration)
 		defer cancel()
 	}
