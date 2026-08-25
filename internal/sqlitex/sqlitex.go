@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 // Synchronous levels, as accepted by Options.Synchronous.
@@ -80,6 +80,12 @@ type Options struct {
 	// the pool unbounded, which is almost never what you want against
 	// SQLite.
 	MaxOpenConns int
+
+	// ConnectRetry overrides DefaultConnectRetry: how long opening a
+	// single connection retries a SQLITE_BUSY before giving up. See
+	// retryConnector for what that covers and why the busy timeout does
+	// not.
+	ConnectRetry time.Duration
 }
 
 // resolve fills in the defaults, so the rest of the package can work with
@@ -96,6 +102,9 @@ func (o Options) resolve() Options {
 	}
 	if o.MaxOpenConns == 0 {
 		o.MaxOpenConns = DefaultMaxOpenConns
+	}
+	if o.ConnectRetry <= 0 {
+		o.ConnectRetry = DefaultConnectRetry
 	}
 	return o
 }
@@ -157,10 +166,11 @@ func Open(path string) (*sql.DB, error) {
 func OpenWith(path string, opts Options) (*sql.DB, error) {
 	opts = opts.resolve()
 
-	db, err := sql.Open("sqlite", opts.apply(path))
+	connector, err := sqlite.NewConnector(opts.apply(path))
 	if err != nil {
 		return nil, fmt.Errorf("sqlitex: open %s: %w", path, err)
 	}
+	db := sql.OpenDB(&retryConnector{inner: connector, timeout: opts.ConnectRetry})
 
 	if opts.MaxOpenConns > 0 {
 		db.SetMaxOpenConns(opts.MaxOpenConns)
