@@ -1,0 +1,26 @@
+-- 0004_dequeue_order: an index that can serve the dequeue ordering, not
+-- just the dequeue filter.
+--
+-- idx_jobs_dequeue (0001) leads with status then run_at, so it narrows the
+-- claim query to ready jobs efficiently but cannot produce them in
+-- priority order: run_at is an inequality sitting between the equality on
+-- status and the ORDER BY columns, which breaks the index's usable sort.
+-- SQLite therefore materialised every ready job into a temporary B-tree
+-- and sorted it on each claim, just to take the single row LIMIT 1 asked
+-- for -- work proportional to the whole backlog on the hottest query in
+-- the system.
+--
+-- This index puts the ORDER BY columns directly after the status
+-- equality, so a claim restricted to one status walks the index in
+-- exactly the order it wants and stops at the first ready row. run_at
+-- trails the sort columns so it is still answered from the index rather
+-- than by fetching the row.
+--
+-- Both indexes are kept, because which one wins depends on the shape of
+-- the backlog: this one is far better when most waiting jobs are ready to
+-- run, while idx_jobs_dequeue is better when the queue is mostly delayed
+-- jobs and the ready ones are a small, selective slice. Given table
+-- statistics the planner picks correctly between them per query, which is
+-- what the ANALYZE maintenance in this package exists to keep supplied.
+CREATE INDEX IF NOT EXISTS idx_jobs_dequeue_order
+    ON jobs (status, priority DESC, created_at, run_at);

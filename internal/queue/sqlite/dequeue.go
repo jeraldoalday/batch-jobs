@@ -21,6 +21,42 @@ SELECT MIN(run_at) FROM jobs
 WHERE status IN ('pending', 'retrying') AND (?1 = '' OR queue = ?1);
 `
 
+// readyBranch is one status's search for the single best job it can
+// offer: the highest-priority, oldest job in that status whose run_at has
+// passed, optionally restricted to one named queue.
+//
+// It is a template rather than one query because the claim is assembled
+// from a branch per status, and that shape is what makes it fast. A
+// single "status IN ('pending', 'retrying')" spans two disjoint ranges of
+// the index, so no index can hand SQLite the rows already in priority
+// order and it falls back to sorting the entire ready backlog on every
+// claim. Split into one branch per status, each branch is a plain
+// equality on the index's leading column, and idx_jobs_dequeue_order
+// yields its rows in exactly the ORDER BY's order -- so the branch stops
+// at the first row it sees instead of reading and sorting all of them.
+//
+// The ?1 = ” escape makes the queue-name filter optional within a single
+// prepared statement rather than needing two near-identical queries.
+const readyBranch = `
+    SELECT * FROM (
+        SELECT id, priority, created_at FROM jobs
+        WHERE status = '%s' AND run_at <= ?1 AND (?2 = '' OR queue = ?2)
+        ORDER BY priority DESC, created_at ASC
+        LIMIT 1
+    )`
+
+// bestReadyQuery picks the single best job across both ready statuses, by
+// taking each status's best and then choosing between those two rows. It
+// is the subquery the claim UPDATE targets.
+var bestReadyQuery = `
+SELECT id FROM (` +
+	fmt.Sprintf(readyBranch, job.StatusPending) + `
+    UNION ALL` +
+	fmt.Sprintf(readyBranch, job.StatusRetrying) + `
+)
+ORDER BY priority DESC, created_at ASC
+LIMIT 1`
+
 // claimQuery atomically picks the highest-priority, oldest, ready job and
 // marks it running in a single statement, so two connections racing to
 // dequeue can never claim the same row. "Ready" means the job is pending
@@ -32,15 +68,9 @@ WHERE status IN ('pending', 'retrying') AND (?1 = '' OR queue = ?1);
 // (?4), so a job is never momentarily running without a lease: a crash
 // between claiming and leasing would leave exactly the orphan the lease
 // exists to catch.
-const claimQuery = `
+var claimQuery = `
 UPDATE jobs SET status = 'running', updated_at = ?1, owner = ?3, lease_expires_at = ?4
-WHERE id = (
-    SELECT id FROM jobs
-    WHERE status IN ('pending', 'retrying') AND run_at <= ?1
-      AND (?2 = '' OR queue = ?2)
-    ORDER BY priority DESC, created_at ASC
-    LIMIT 1
-)
+WHERE id = (` + bestReadyQuery + `)
 RETURNING ` + jobColumns + `;
 `
 
