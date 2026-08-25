@@ -255,3 +255,91 @@ func TestIsBusy(t *testing.T) {
 		t.Errorf("isBusy(%v) = false, want true for code %d", err, serr.Code())
 	}
 }
+
+// TestInMemoryDatabaseIsSharedAcrossThePool is the regression test for a
+// bug that surfaced as an intermittent "no such table".
+//
+// SQLite gives every connection opened against ":memory:" its own private
+// database, so a pool of them is a pool of unrelated empty databases: a
+// table created through one connection does not exist on the next, and
+// which call lands on which is a matter of when database/sql happened to
+// open connections. OpenWith now pins such a database to one connection.
+func TestInMemoryDatabaseIsSharedAcrossThePool(t *testing.T) {
+	for _, path := range []string{":memory:", "", "file:private?mode=memory"} {
+		t.Run(path, func(t *testing.T) {
+			db, err := OpenWith(path, Options{MaxOpenConns: 4})
+			if err != nil {
+				t.Fatalf("OpenWith: %v", err)
+			}
+			defer db.Close()
+
+			if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+
+			// Writing and reading through separate connections is what
+			// exposed the bug; a single connection could not.
+			var wg sync.WaitGroup
+			errs := make([]error, 8)
+			for i := 0; i < 8; i++ {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					if _, err := db.Exec(`INSERT INTO t (id) VALUES (?)`, i); err != nil {
+						errs[i] = err
+						return
+					}
+					var n int
+					errs[i] = db.QueryRow(`SELECT COUNT(*) FROM t`).Scan(&n)
+				}(i)
+			}
+			wg.Wait()
+
+			for i, err := range errs {
+				if err != nil {
+					t.Errorf("goroutine %d: %v", i, err)
+				}
+			}
+
+			var n int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM t`).Scan(&n); err != nil {
+				t.Fatalf("count: %v", err)
+			}
+			if n != 8 {
+				t.Errorf("the database holds %d rows, want 8: writes went to separate databases", n)
+			}
+		})
+	}
+}
+
+func TestIsPrivateMemory(t *testing.T) {
+	tests := map[string]bool{
+		":memory:":                            true,
+		"":                                    true,
+		"file:x?mode=memory":                  true,
+		"file:x?mode=memory&cache=shared":     false,
+		"file:x?cache=shared&mode=memory":     false,
+		"/var/lib/batch-jobs/jobs.db":         false,
+		"file:/tmp/jobs.db?_journal_mode=WAL": false,
+	}
+	for path, want := range tests {
+		if got := isPrivateMemory(path); got != want {
+			t.Errorf("isPrivateMemory(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
+// TestSharedCacheMemoryKeepsItsPool checks the exclusion: a shared-cache
+// in-memory URI genuinely is shared between connections, so it keeps the
+// pool it was configured with.
+func TestSharedCacheMemoryKeepsItsPool(t *testing.T) {
+	db, err := OpenWith("file:shared-pool-test?mode=memory&cache=shared", Options{MaxOpenConns: 3})
+	if err != nil {
+		t.Fatalf("OpenWith: %v", err)
+	}
+	defer db.Close()
+
+	if got := db.Stats().MaxOpenConnections; got != 3 {
+		t.Errorf("MaxOpenConnections = %d, want 3", got)
+	}
+}
