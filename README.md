@@ -396,6 +396,57 @@ it already accepted. Over HTTP, `POST /v1/jobs` answers a full queue with
 instead of `500`, since the request was well-formed and will likely succeed
 once the backlog drains.
 
+## Performance
+
+Full numbers, methodology, and tuning advice are in
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md). The short version:
+
+**Batch your producers.** A durable enqueue's cost is dominated by the
+transaction around the write, not by the row. Submitting a hundred jobs one
+at a time costs about 83µs each; in one batch, about 28µs.
+
+```go
+subs := make([]batchjobs.Submission, 0, len(recipients))
+for _, to := range recipients {
+    sub, err := batchjobs.JSON("emails", Message{To: to},
+        batchjobs.WithIdempotencyKey("welcome:"+to))
+    if err != nil {
+        log.Fatal(err)
+    }
+    subs = append(subs, sub)
+}
+
+jobs, err := engine.EnqueueBatch(ctx, subs)
+```
+
+The batch is atomic — either every job is stored or none is — so a caller
+that gets an error can retry the whole thing without working out which half
+went through. Idempotency keys work across a batch and within one, which is
+what makes that retry safe.
+
+**Dequeue is flat in the backlog.** Claiming a job costs about 240µs
+whether 1,000 or 50,000 jobs are waiting. That took a second index
+(`idx_jobs_dequeue_order`), a claim query split into one branch per status
+so the index can supply the ordering, and maintained table statistics so
+SQLite chooses between the two indexes correctly. Before, a claim against a
+50,000-job backlog took 13.7ms — and every worker runs that query in a
+loop, so the queue got slower exactly as it filled up.
+
+**Load-test the whole thing, not one call.**
+
+```sh
+# 500 jobs/s for a minute through 8 workers, each job taking 5ms.
+go run ./cmd/batch-jobs-bench -rate 500 -duration 1m -workers 8 -work 5ms
+```
+
+`batch-jobs-bench` reports enqueue latency and end-to-end latency
+separately, and the gap between them is the diagnosis. A queue that has
+fallen behind still *accepts* jobs in microseconds — only the end-to-end
+distribution shows the backlog, and it keeps growing for as long as the run
+lasts. The harness paces open-loop and corrects for coordinated omission,
+so a run that could not offer the load it was asked for says so rather than
+reporting a comfortable latency for a system in trouble.
+
 ## Observability
 
 `worker.Pool` and `scheduler.Scheduler` each take optional `Logger` and
