@@ -42,8 +42,20 @@ ON CONFLICT(id) DO UPDATE SET
 // idempotentMatchQuery finds an existing job sharing j's (queue,
 // idempotency_key) pair, so a repeated Enqueue with the same key can adopt
 // the original job's state instead of creating a duplicate.
+//
+// The trailing "idempotency_key != ”" is redundant as a filter -- callers
+// only run this with a non-empty key -- but it is what makes the query
+// usable at all on a large table. idx_jobs_idempotency is a *partial*
+// index, defined WHERE idempotency_key != ”, so that jobs opting out of
+// dedupe do not all collide on the empty string. SQLite will only use a
+// partial index for a query whose own WHERE clause provably implies the
+// index's, and "idempotency_key = ?" against a bound parameter does not:
+// the parameter could be ”. Without the extra term the planner falls back
+// to SCAN jobs, so every idempotent enqueue reads the whole table and gets
+// slower as the queue grows.
 const idempotentMatchQuery = `
-SELECT ` + jobColumns + ` FROM jobs WHERE queue = ? AND idempotency_key = ?;
+SELECT ` + jobColumns + ` FROM jobs
+WHERE queue = ? AND idempotency_key = ? AND idempotency_key != '';
 `
 
 // Enqueue implements queue.Queue. If j has a non-empty IdempotencyKey and a
