@@ -162,8 +162,34 @@
 - Runnable godoc examples for both public packages, a rewritten README
   quick start, and a CHANGELOG
 
-## Day 13 — Performance
-- Load testing, benchmarking, tuning
+## Day 13 — Performance (done)
+- `internal/loadgen`: a constant-space latency histogram (log-linear
+  buckets, ~1.6% relative error at any magnitude) and an open-loop load
+  generator that corrects for coordinated omission — each operation's
+  latency is measured from its *intended* send time, and a separate
+  send-lag distribution says whether the generator kept to its schedule
+  at all
+- `cmd/batch-jobs-bench`: drives producers and workers against a real
+  database and reports enqueue latency beside end-to-end latency, which
+  is what distinguishes a slow queue from a queue that has simply fallen
+  behind (enqueue stays fast; end-to-end grows without bound)
+- Dequeue made independent of the backlog: migration `0004` adds
+  `idx_jobs_dequeue_order`, and the claim query takes each status's best
+  row from its own branch so the index can supply the ordering instead
+  of SQLite sorting every ready job to take one. 13.7ms → 245µs at
+  50,000 waiting jobs. `Queue.Optimize` keeps the planner's statistics
+  fresh enough to choose between the two dequeue indexes
+- Bug fix: an idempotent enqueue scanned the whole table, because a
+  partial index is unusable unless the query restates its predicate
+- `EnqueueBatch` on the queue and the public `Engine`: many jobs in one
+  transaction, atomically, 83µs → 28µs per job
+- Connection tuning via `sqlitex.Options`: `synchronous = NORMAL`, an
+  8MB page cache, a bounded pool with a matching idle cap
+- Bug fixes: `":memory:"` gave every pooled connection its own database
+  (so `batchjobs.MemoryDB` was broken under concurrency); opening
+  several pools against one fresh file raced on the WAL transition,
+  which SQLite does not apply the busy timeout to
+- `docs/PERFORMANCE.md`, a README section, and `make bench` / `make load`
 
 ## Day 14 — Release
 - Docs, CHANGELOG, v0.1.0 tag
