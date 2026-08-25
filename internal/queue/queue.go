@@ -71,3 +71,47 @@ type Queue interface {
 	// return ErrClosed and future Enqueue/Dequeue calls to fail.
 	Close() error
 }
+
+// BatchEnqueuer is implemented by queues that can admit several jobs in
+// one round trip.
+//
+// It exists because a durable backend's per-job cost is dominated by the
+// transaction around the write, not by the write itself: committing N jobs
+// once is far cheaper than committing once per job. A producer with a
+// batch in hand -- a nightly fan-out, an import, a retry sweep -- should
+// not have to pay N times for something the backend can do once.
+//
+// Callers that want to work against any Queue should type-assert for this
+// and fall back to a loop of Enqueue, which is always correct if slower.
+type BatchEnqueuer interface {
+	// EnqueueBatch adds every job in jobs, atomically: either all of them
+	// are admitted or none are. Each *job.Job is updated in place the way
+	// Enqueue updates it, so a job deduped against an existing
+	// idempotency key comes back describing the original.
+	//
+	// An empty slice is a no-op success. A nil element is an error, and
+	// leaves the whole batch unadmitted.
+	EnqueueBatch(jobs []*job.Job) error
+}
+
+// EnqueueBatch adds every job in jobs to q, using q's own batch support if
+// it has any and a loop of Enqueue otherwise. It is the call a producer
+// should make when it has more than one job in hand and does not know
+// which kind of queue it is holding.
+//
+// The fallback is not atomic: a queue without batch support that fails
+// partway leaves the jobs before the failure admitted. That is the same
+// thing a caller writing the loop itself would get, so the difference is
+// only worth knowing about when the atomicity matters, in which case
+// assert for BatchEnqueuer directly.
+func EnqueueBatch(q Queue, jobs []*job.Job) error {
+	if b, ok := q.(BatchEnqueuer); ok {
+		return b.EnqueueBatch(jobs)
+	}
+	for _, j := range jobs {
+		if err := q.Enqueue(j); err != nil {
+			return err
+		}
+	}
+	return nil
+}
