@@ -163,8 +163,17 @@ func Open(path string) (*sql.DB, error) {
 }
 
 // OpenWith is Open with explicit tuning.
+//
+// An in-memory database that is private to a connection (":memory:", or a
+// URI with mode=memory and no shared cache) is pinned to a single
+// connection whatever MaxOpenConns says, because SQLite would otherwise
+// give each connection in the pool a separate, empty database. See
+// isPrivateMemory.
 func OpenWith(path string, opts Options) (*sql.DB, error) {
 	opts = opts.resolve()
+	if isPrivateMemory(path) {
+		opts.MaxOpenConns = memoryPoolSize
+	}
 
 	connector, err := sqlite.NewConnector(opts.apply(path))
 	if err != nil {
