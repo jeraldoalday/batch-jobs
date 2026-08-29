@@ -37,6 +37,12 @@ type Server struct {
 	// format. A nil Metrics (the default) leaves /metrics unmounted.
 	Metrics *metrics.Metrics
 
+	// ScheduleStore, if set, backs the /v1/schedules routes. Leaving it
+	// nil (the default) still mounts them, answering 501: a caller who
+	// asks a server without scheduling for its schedules deserves to be
+	// told that rather than given a 404 they cannot tell from a typo.
+	ScheduleStore ScheduleStore
+
 	// AuthToken, if set, is required as the X-API-Key header on every
 	// request except /healthz. Leaving it empty (the default) disables
 	// auth, which is appropriate for local development only.
@@ -89,6 +95,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/jobs", s.handleListJobs)
 	mux.HandleFunc("POST /v1/jobs/{id}/cancel", s.handleCancelJob)
 	mux.HandleFunc("POST /v1/jobs/{id}/retry", s.handleRetryJob)
+	mux.HandleFunc("POST /v1/schedules", s.handleCreateSchedule)
+	mux.HandleFunc("GET /v1/schedules", s.handleListSchedules)
+	mux.HandleFunc("GET /v1/schedules/{id}", s.handleGetSchedule)
+	mux.HandleFunc("PATCH /v1/schedules/{id}", s.handleUpdateSchedule)
+	mux.HandleFunc("DELETE /v1/schedules/{id}", s.handleDeleteSchedule)
+	mux.HandleFunc("POST /v1/schedules/{id}/pause", s.handlePauseSchedule)
+	mux.HandleFunc("POST /v1/schedules/{id}/resume", s.handleResumeSchedule)
+	mux.HandleFunc("POST /v1/schedules/{id}/trigger", s.handleTriggerSchedule)
 	mux.HandleFunc("POST /v1/recover", s.handleRecover)
 	mux.HandleFunc("GET /v1/stats", s.handleStats)
 	mux.HandleFunc("GET /v1/events", s.handleEvents)

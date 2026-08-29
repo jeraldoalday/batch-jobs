@@ -517,6 +517,11 @@ func (e *Engine) APIHandler(opts ...APIOptions) http.Handler {
 		AuthToken: o.AuthToken,
 		RateLimit: api.RateLimit{RPS: o.RateLimitRPS, Burst: o.RateLimitBurst},
 	}
+	// Left nil on an Engine without scheduling, which is what makes the
+	// schedule routes answer 501 rather than pretending to work.
+	if e.scheduleMgr != nil {
+		srv.ScheduleStore = e.scheduleMgr
+	}
 	if o.Dashboard {
 		srv.Assets = dashboard.FS
 	}

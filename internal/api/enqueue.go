@@ -54,16 +54,10 @@ func (s *Server) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	priority := job.PriorityNormal
-	if req.Priority != nil {
-		p := job.Priority(*req.Priority)
-		switch p {
-		case job.PriorityLow, job.PriorityNormal, job.PriorityHigh:
-			priority = p
-		default:
-			writeError(w, http.StatusBadRequest, "priority must be -1 (low), 0 (normal), or 1 (high)")
-			return
-		}
+	priority, err := parsePriority(req.Priority)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	if req.MaxRetries < 0 {
 		writeError(w, http.StatusBadRequest, "max_retries must be >= 0")
