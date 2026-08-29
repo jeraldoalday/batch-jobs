@@ -139,11 +139,76 @@ func (s *Schedule) Advance(now time.Time) (time.Time, error) {
 	return next, nil
 }
 
+// Reschedule replaces the schedule's cron expression and recomputes
+// NextRunAt from now, leaving every other field alone. It reports an error
+// without touching the schedule if the expression will not parse or never
+// fires, so a bad edit cannot leave a stored schedule that the scheduler
+// has to disable the first time it comes due.
+func (s *Schedule) Reschedule(cronExpr string, now time.Time) error {
+	c, err := ParseCron(cronExpr)
+	if err != nil {
+		return err
+	}
+	next, ok := c.Next(now)
+	if !ok {
+		return fmt.Errorf("schedule: cron expression %q never fires", cronExpr)
+	}
+
+	s.CronExpr = cronExpr
+	s.NextRunAt = next
+	s.UpdatedAt = now
+	return nil
+}
+
+// Upcoming returns the next n times the schedule fires at or after
+// NextRunAt, soonest first. It answers the question a cron expression by
+// itself does not -- "so when does this actually run?" -- which is worth a
+// glance before saving a schedule and worth showing beside one that has
+// been saved.
+//
+// A schedule that stops firing (a February 30th, say) yields fewer than n
+// times rather than an error: the times it did produce are still the
+// truthful answer.
+func (s *Schedule) Upcoming(n int) ([]time.Time, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+
+	c, err := ParseCron(s.CronExpr)
+	if err != nil {
+		return nil, err
+	}
+
+	// The first entry is NextRunAt itself rather than a time recomputed
+	// from now: a schedule that is overdue should say so, not quietly
+	// report the fire after the one it has not managed yet.
+	times := make([]time.Time, 0, n)
+	at := s.NextRunAt
+	times = append(times, at)
+	for len(times) < n {
+		next, ok := c.Next(at)
+		if !ok {
+			break
+		}
+		times = append(times, next)
+		at = next
+	}
+	return times, nil
+}
+
 // Store persists Schedules and lets a scheduler loop find the ones due to
 // fire without scanning every row.
 type Store interface {
 	// Create persists a new schedule.
 	Create(s *Schedule) error
+
+	// Update overwrites the mutable fields of the stored schedule with
+	// s's -- its queue, payload, job options, cron expression, and next
+	// fire time -- keyed by s.ID. It returns ErrNotFound if no such
+	// schedule exists. Whether the schedule is enabled is SetEnabled's to
+	// change, and when it last fired is MarkFired's, so an edit does not
+	// silently resurrect a paused schedule or erase its history.
+	Update(s *Schedule) error
 
 	// Get returns the schedule with the given ID, or ErrNotFound.
 	Get(id string) (*Schedule, error)

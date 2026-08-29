@@ -21,6 +21,36 @@ func (s *Store) Create(sch *schedule.Schedule) error {
 	return nil
 }
 
+// updateQuery rewrites every field an edit may change. It deliberately
+// leaves enabled and last_run_at alone: those belong to SetEnabled and
+// MarkFired, and folding them in here would let an edit racing with a
+// firing roll the schedule's history backwards.
+const updateQuery = `
+UPDATE schedules
+SET queue = ?, payload = ?, priority = ?, max_retries = ?, cron_expr = ?,
+    next_run_at = ?, updated_at = ?, timeout_ns = ?
+WHERE id = ?;
+`
+
+// Update implements schedule.Store.
+func (s *Store) Update(sch *schedule.Schedule) error {
+	res, err := s.db.Exec(updateQuery,
+		sch.Queue,
+		sch.Payload,
+		int(sch.Priority),
+		sch.MaxRetries,
+		sch.CronExpr,
+		sch.NextRunAt.UnixNano(),
+		time.Now().UTC().UnixNano(),
+		int64(sch.Timeout),
+		sch.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("schedule/sqlite: update %s: %w", sch.ID, err)
+	}
+	return checkRowFound(res, "update", sch.ID)
+}
+
 // Get implements schedule.Store.
 func (s *Store) Get(id string) (*schedule.Schedule, error) {
 	row := s.db.QueryRow(`SELECT `+scheduleColumns+` FROM schedules WHERE id = ?`, id)
