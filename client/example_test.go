@@ -146,3 +146,76 @@ func ExampleStats() {
 	// pending=4 running=2 succeeded=91 dead=3
 	// backlog: 4 failing: 3
 }
+
+// Managing recurring work on a server from another process. The vocabulary
+// matches the embedded engine's, so moving from one to the other is a
+// change of transport rather than of concepts.
+func Example_schedules() {
+	c, err := client.New("http://localhost:8080")
+	if err != nil {
+		log.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// 3am on weekdays.
+	s, err := c.AddScheduleJSON(ctx, "reports", "0 3 * * 1-5",
+		map[string]string{"window": "daily"},
+		client.WithScheduleMaxRetries(3),
+		client.WithScheduleTimeout(10*time.Minute),
+	)
+	if err != nil {
+		// A server built without scheduling says so, rather than
+		// looking like a missing route.
+		if errors.Is(err, client.ErrUnsupported) {
+			log.Fatal("this server does not run schedules")
+		}
+		log.Fatal(err)
+	}
+	log.Printf("schedule %s next runs at %s", s.ID, s.NextRunAt)
+
+	// Check it does what it should before waiting until tomorrow. The
+	// timetable is untouched by a manual run.
+	j, err := c.TriggerSchedule(ctx, s.ID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("triggered job %s", j.ID)
+}
+
+// An update names only the fields it changes, so adjusting the expression
+// cannot accidentally clear the payload.
+func ExampleClient_UpdateSchedule() {
+	c, err := client.New("http://localhost:8080")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	updated, err := c.UpdateSchedule(context.Background(), "a-schedule-id",
+		client.ScheduleUpdate{}.SetCron("0 4 * * 1-5").SetMaxRetries(5))
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("now %s, next at %s", updated.Cron, updated.NextRunAt)
+}
+
+// A schedule list is worth watching for one thing in particular: an
+// enabled schedule whose next run is in the past means the server's
+// scheduler is not running, or is not keeping up.
+func ExampleSchedule_Overdue() {
+	c, err := client.New("http://localhost:8080")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	schedules, err := c.ListSchedules(context.Background())
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	now := time.Now()
+	for _, s := range schedules {
+		if s.Overdue(now) {
+			log.Printf("schedule %s (%s) was due at %s and has not fired", s.ID, s.Cron, s.NextRunAt)
+		}
+	}
+}
