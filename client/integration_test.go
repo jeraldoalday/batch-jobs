@@ -12,6 +12,8 @@ import (
 	"github.com/jeraldoalday/batch-jobs/client"
 	"github.com/jeraldoalday/batch-jobs/internal/api"
 	"github.com/jeraldoalday/batch-jobs/internal/queue/sqlite"
+	"github.com/jeraldoalday/batch-jobs/internal/schedule"
+	schedulesqlite "github.com/jeraldoalday/batch-jobs/internal/schedule/sqlite"
 )
 
 // newServer wires the real HTTP API to a real SQLite-backed queue and
@@ -332,5 +334,169 @@ func TestIntegrationEventStream(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("stats never reflected the enqueued job, last = %s", stats)
 		}
+	}
+}
+
+// withSchedules configures a server with a real schedule store, backed by
+// its own in-memory database and enqueueing into the same queue the API
+// serves -- the arrangement a deployment actually runs.
+func withSchedules(t *testing.T) func(*api.Server) {
+	t.Helper()
+	return func(srv *api.Server) {
+		store, err := schedulesqlite.Open("file:" + t.Name() + "-schedules?mode=memory&cache=shared")
+		if err != nil {
+			t.Fatalf("schedule store: %v", err)
+		}
+		t.Cleanup(func() { store.Close() })
+		// Triggers enqueue into the very queue this server serves, so
+		// the job a trigger produces comes back out of GET /v1/jobs.
+		srv.ScheduleStore = &schedule.Manager{Store: store, Queue: srv.Store}
+	}
+}
+
+func TestIntegrationScheduleLifecycle(t *testing.T) {
+	ts, _ := newServer(t, withSchedules(t))
+	c := newClient(t, ts)
+	ctx := context.Background()
+
+	created, err := c.AddSchedule(ctx, "reports", "0 3 * * *", []byte("nightly"),
+		client.WithSchedulePriority(client.PriorityHigh),
+		client.WithScheduleMaxRetries(3),
+		client.WithScheduleTimeout(90*time.Second),
+	)
+	if err != nil {
+		t.Fatalf("AddSchedule: %v", err)
+	}
+	if created.ID == "" {
+		t.Fatal("ID is empty, want a server-assigned one")
+	}
+	if !created.Enabled {
+		t.Error("Enabled = false, want a new schedule enabled")
+	}
+	if created.Timeout != 90*time.Second {
+		t.Errorf("Timeout = %v, want %v", created.Timeout, 90*time.Second)
+	}
+	if len(created.Upcoming) == 0 {
+		t.Error("Upcoming is empty, want the server's projected fire times")
+	}
+
+	got, err := c.GetSchedule(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetSchedule: %v", err)
+	}
+	if got.Queue != "reports" || got.Cron != "0 3 * * *" {
+		t.Errorf("schedule = queue %q cron %q, want reports/0 3 * * *", got.Queue, got.Cron)
+	}
+	if got.Fired() {
+		t.Error("Fired() = true for a schedule that has never run")
+	}
+
+	listed, err := c.ListSchedules(ctx)
+	if err != nil {
+		t.Fatalf("ListSchedules: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != created.ID {
+		t.Fatalf("ListSchedules = %+v, want just %q", listed, created.ID)
+	}
+
+	updated, err := c.UpdateSchedule(ctx, created.ID, client.ScheduleUpdate{}.SetCron("*/5 * * * *").SetMaxRetries(9))
+	if err != nil {
+		t.Fatalf("UpdateSchedule: %v", err)
+	}
+	if updated.Cron != "*/5 * * * *" || updated.MaxRetries != 9 {
+		t.Errorf("updated = cron %q retries %d, want */5 * * * * and 9", updated.Cron, updated.MaxRetries)
+	}
+	if !updated.NextRunAt.Before(created.NextRunAt) {
+		t.Errorf("NextRunAt = %v, want it recomputed to before %v", updated.NextRunAt, created.NextRunAt)
+	}
+	if string(updated.Payload) != "nightly" {
+		t.Errorf("Payload = %q, want the untouched %q", updated.Payload, "nightly")
+	}
+
+	if err := c.PauseSchedule(ctx, created.ID); err != nil {
+		t.Fatalf("PauseSchedule: %v", err)
+	}
+	if paused, err := c.GetSchedule(ctx, created.ID); err != nil || paused.Enabled {
+		t.Fatalf("after pause: schedule = %+v, err = %v; want it disabled", paused, err)
+	}
+
+	if err := c.ResumeSchedule(ctx, created.ID); err != nil {
+		t.Fatalf("ResumeSchedule: %v", err)
+	}
+	if resumed, err := c.GetSchedule(ctx, created.ID); err != nil || !resumed.Enabled {
+		t.Fatalf("after resume: schedule = %+v, err = %v; want it enabled", resumed, err)
+	}
+
+	if err := c.DeleteSchedule(ctx, created.ID); err != nil {
+		t.Fatalf("DeleteSchedule: %v", err)
+	}
+	if _, err := c.GetSchedule(ctx, created.ID); !errors.Is(err, client.ErrNotFound) {
+		t.Fatalf("GetSchedule after delete = %v, want ErrNotFound", err)
+	}
+}
+
+func TestIntegrationTriggerScheduleEnqueuesARealJob(t *testing.T) {
+	ts, _ := newServer(t, withSchedules(t))
+	c := newClient(t, ts)
+	ctx := context.Background()
+
+	created, err := c.AddSchedule(ctx, "reports", "0 3 * * *", []byte("nightly"),
+		client.WithScheduleMaxRetries(4))
+	if err != nil {
+		t.Fatalf("AddSchedule: %v", err)
+	}
+
+	j, err := c.TriggerSchedule(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("TriggerSchedule: %v", err)
+	}
+
+	// The job is really in the queue the API serves, not merely echoed
+	// back: it comes out of the same Get every other job does.
+	fetched, err := c.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if fetched.Queue != "reports" || string(fetched.Payload) != "nightly" {
+		t.Errorf("job = queue %q payload %q, want reports/nightly", fetched.Queue, fetched.Payload)
+	}
+	if fetched.MaxRetries != 4 {
+		t.Errorf("MaxRetries = %d, want the schedule's 4", fetched.MaxRetries)
+	}
+	if fetched.Status != client.StatusPending {
+		t.Errorf("Status = %v, want %v", fetched.Status, client.StatusPending)
+	}
+
+	after, err := c.GetSchedule(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetSchedule: %v", err)
+	}
+	if !after.NextRunAt.Equal(created.NextRunAt) {
+		t.Errorf("NextRunAt = %v, want a manual trigger to leave it at %v", after.NextRunAt, created.NextRunAt)
+	}
+	if after.Fired() {
+		t.Error("Fired() = true, want a manual trigger not recorded as a firing")
+	}
+}
+
+func TestIntegrationScheduleRoutesUnsupportedWithoutAStore(t *testing.T) {
+	ts, _ := newServer(t)
+	c := newClient(t, ts)
+	ctx := context.Background()
+
+	if _, err := c.ListSchedules(ctx); !errors.Is(err, client.ErrUnsupported) {
+		t.Fatalf("ListSchedules against a server without scheduling = %v, want ErrUnsupported", err)
+	}
+	if _, err := c.AddSchedule(ctx, "reports", "0 3 * * *", nil); !errors.Is(err, client.ErrUnsupported) {
+		t.Fatalf("AddSchedule against a server without scheduling = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestIntegrationAddScheduleRejectsABadExpression(t *testing.T) {
+	ts, _ := newServer(t, withSchedules(t))
+	c := newClient(t, ts)
+
+	if _, err := c.AddSchedule(context.Background(), "reports", "nightly please", nil); !errors.Is(err, client.ErrInvalidRequest) {
+		t.Fatalf("AddSchedule with an unparsable expression = %v, want ErrInvalidRequest", err)
 	}
 }
