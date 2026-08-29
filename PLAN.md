@@ -191,5 +191,34 @@
   which SQLite does not apply the busy timeout to
 - `docs/PERFORMANCE.md`, a README section, and `make bench` / `make load`
 
-## Day 14 — Release
-- Docs, CHANGELOG, v0.1.0 tag
+## Day 14 — Scheduling reaches the surface, and release (done)
+- Cron scheduling had existed since Day 3 but only under `internal/`, so
+  the public package a program actually imports could not express "run
+  this every night at three". `Config.Schedules` opens a schedule store
+  and runs the loop; `AddSchedule`/`AddScheduleJSON`, `GetSchedule`,
+  `ListSchedules`, `UpdateSchedule`, `PauseSchedule`, `ResumeSchedule`,
+  `DeleteSchedule` and `TriggerSchedule` manage them, with `Schedule`,
+  `Upcoming`, `Overdue` and `ValidateCron` alongside. Schedules live in
+  their own database, derived from `Config.DB` (`jobs.db` gives
+  `jobs.schedules.db`), because two migration sets cannot share one
+  `schema_migrations` table
+- The decisions, not just the plumbing: `UpdateSchedule` moves the next
+  fire time only when the expression actually changed, and validates it
+  before writing anything, so a rejected edit changes nothing;
+  `ResumeSchedule` recomputes the fire time so a week's pause does not
+  end in an immediate firing; `TriggerSchedule` runs a schedule now
+  without moving its timetable or recording the run as a firing, and
+  works on a paused one
+- `schedule.Store.Update` and `Schedule.Reschedule`/`Upcoming` underneath,
+  and `schedule.Manager` to hold the editing rules once rather than
+  letting the engine and the HTTP API each grow their own
+- The same surface over HTTP (`/v1/schedules`, plus pause/resume/trigger),
+  in the Go client (with `ScheduleUpdate` as a patch), in
+  `cmd/batch-jobs-server` (`-schedules`), and in the dashboard as a panel
+  that hides itself on a server without scheduling and flags a schedule
+  the scheduler has not kept up with. A server without a schedule store
+  answers 501 rather than 404, so a client can tell "does not schedule"
+  from "bad path"
+- Release: README rewritten around the public scheduling API, the OpenAPI
+  spec extended, runnable examples for both packages, CHANGELOG cut over
+  to v0.1.0, and the v0.1.0 tag

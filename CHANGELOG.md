@@ -5,11 +5,15 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Until v0.1.0 there is no released version, so everything below sits under
-Unreleased. Entries describe behaviour a user can observe, not the commits
-that produced it.
+Entries describe behaviour a user can observe, not the commits that produced
+it.
 
-## [Unreleased]
+## [0.1.0] - 2026-08-30
+
+The first released version. Everything below is what the public API offers
+on day one, rather than a diff against something earlier: before v0.1.0
+there was no released version and nothing under `internal/` was ever part
+of the contract.
 
 ### Added
 
@@ -39,6 +43,55 @@ that produced it.
   `ErrConflict`, `ErrQueueFull`, `ErrRateLimited`, `ErrUnauthorized`,
   `ErrInvalidRequest`, `ErrUnsupported`, `ErrServer`), plus `Temporary` and
   `RetryAfter` helpers.
+
+#### Scheduling
+
+- `batchjobs`: cron-driven recurring jobs reach the public API.
+  `Config.Schedules` opens a schedule store and runs the loop that enqueues
+  each schedule's job as it comes due; `AddSchedule`, `AddScheduleJSON`,
+  `GetSchedule`, `ListSchedules`, `UpdateSchedule`, `PauseSchedule`,
+  `ResumeSchedule`, `DeleteSchedule` and `TriggerSchedule` manage them. A
+  scheduled job is an ordinary job by the time a worker sees it, so
+  handlers need to know nothing about schedules.
+- `batchjobs`: `Schedule` with `Upcoming` (the next fire times, which is
+  the question a cron expression by itself does not answer), `Overdue`, and
+  `Decode`; `ValidateCron` for checking an expression before offering to
+  save it. Enqueue's own options describe the job template, and the three
+  that describe a single submission — `WithDelay`, `WithRunAt`,
+  `WithIdempotencyKey` — are rejected rather than silently ignored.
+- `batchjobs`: `UpdateSchedule` takes an edit function and moves the next
+  fire time only when the expression actually changed, so adjusting a retry
+  budget cannot postpone tonight's run. A new expression is validated
+  before anything is written, so a rejected edit leaves the stored schedule
+  untouched.
+- `batchjobs`: `ResumeSchedule` recomputes the next fire time from now, so
+  a schedule paused for a week does not fire the instant it comes back.
+  `TriggerSchedule` runs one on demand without moving its next fire time or
+  recording the run as a firing, and works on a paused schedule.
+- `batchjobs`: `Config.SchedulesDB` and `Config.SchedulePoll`, and the
+  `ErrScheduleNotFound` and `ErrSchedulingDisabled` sentinels. Schedules
+  live in their own database — derived from `Config.DB`, so `jobs.db` gives
+  `jobs.schedules.db` — because the two schemas have separately versioned
+  migration sets that one `schema_migrations` table cannot track.
+- `client`: `AddSchedule`, `AddScheduleJSON`, `GetSchedule`,
+  `ListSchedules`, `UpdateSchedule`, `PauseSchedule`, `ResumeSchedule`,
+  `DeleteSchedule` and `TriggerSchedule`, with `ScheduleUpdate` as a patch
+  whose chainable setters name only the fields being changed. `Schedule`
+  exposes the server's projected fire times, and `Fired`/`Overdue` for
+  reading its state.
+- HTTP: `POST`/`GET /v1/schedules`, `GET`/`PATCH`/`DELETE
+  /v1/schedules/{id}`, and `POST /v1/schedules/{id}/pause`, `/resume` and
+  `/trigger`. A `PATCH` leaves omitted fields alone; a `DELETE` of an
+  absent schedule still answers 204, so the call is safe to retry. A server
+  without a schedule store answers 501 on all of them rather than 404, so a
+  client can tell "this server does not schedule" from a bad path.
+- `cmd/batch-jobs-server`: `-schedules`, `-schedules-db` and
+  `-schedule-poll`.
+- Dashboard: a schedules panel listing every schedule with its expression,
+  next run and last run, with Run now / Pause / Resume / Delete and a form
+  to add one. It hides itself on a server that does not schedule, and flags
+  an enabled schedule whose next run has passed — the visible symptom of a
+  scheduler that is not running or not keeping up.
 
 #### Engine
 
@@ -136,6 +189,27 @@ that produced it.
   trying.
 - README: a Performance section.
 - `make bench`, `make bench-queue`, and `make load`.
+- README: a Scheduling section written around the public API rather than
+  the internal packages, plus the schedule routes, server flags, and
+  dashboard panel.
+- `docs/openapi.yaml`: the schedule endpoints, both request bodies, the
+  `Schedule` and `Cron` schemas, and the 501 a server without scheduling
+  returns.
+- Runnable godoc examples for schedules in both public packages.
+
+### Internal
+
+- `schedule.Store.Update` edits a stored schedule in place, leaving
+  `enabled` and the firing history to `SetEnabled` and `MarkFired`;
+  `Schedule.Reschedule` validates a new expression before applying it.
+- `schedule.Manager` holds the editing rules — validation, when an edit may
+  move the next fire time, clearing an overdue one on resume, producing a
+  job on demand — so the embedded engine and the HTTP API share one
+  implementation of them rather than each growing their own.
+- `sqlitex.SiblingPath` derives a second database path from the first,
+  inserting a suffix before the extension.
+- `api.ScheduleStore` is the interface the schedule handlers sit behind,
+  satisfied by `schedule.Manager`.
 
 ## Earlier work
 
