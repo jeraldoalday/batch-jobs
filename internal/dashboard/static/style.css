@@ -261,3 +261,53 @@ td.id-cell {
   padding: 4px 10px;
   font-size: 12px;
 }
+
+.section-gap {
+  margin-bottom: 24px;
+}
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-head h2 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  margin: 0;
+}
+
+.field-wide input {
+  min-width: 220px;
+}
+
+/* A cron expression is read character by character, so it gets the same
+   monospace treatment as an ID: a stray space inside a step field is
+   invisible in a proportional font. */
+td.cron-cell {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.time-cell {
+  color: var(--text-secondary);
+}
+
+.time-meta {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.time-overdue {
+  color: var(--status-warning);
+}
+
+.state-enabled { color: var(--status-good); }
+.state-paused { color: var(--text-muted); }

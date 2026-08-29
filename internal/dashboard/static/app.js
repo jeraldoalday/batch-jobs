@@ -13,6 +13,7 @@
   const RETRYABLE = new Set(["dead", "failed"]);
   const CANCELABLE = new Set(["pending", "retrying"]);
   const JOBS_POLL_INTERVAL_MS = 5000;
+  const SCHEDULES_POLL_INTERVAL_MS = 25000;
 
   const statsEl = document.getElementById("stats");
   const connBadge = document.getElementById("conn-badge");
@@ -21,6 +22,13 @@
   const refreshBtn = document.getElementById("refresh-btn");
   const jobsError = document.getElementById("jobs-error");
   const jobsBody = document.getElementById("jobs-body");
+  const schedulesPanel = document.getElementById("schedules-panel");
+  const schedulesBody = document.getElementById("schedules-body");
+  const schedulesError = document.getElementById("schedules-error");
+  const scheduleForm = document.getElementById("schedule-form");
+  const scheduleQueue = document.getElementById("schedule-queue");
+  const scheduleCron = document.getElementById("schedule-cron");
+  const schedulePayload = document.getElementById("schedule-payload");
 
   function renderStats(counts) {
     statsEl.replaceChildren(
@@ -211,6 +219,182 @@
   statusFilter.addEventListener("change", refreshJobs);
   limitInput.addEventListener("change", refreshJobs);
 
+  // ---- schedules -------------------------------------------------------
+  //
+  // The panel stays hidden until the server proves it schedules. A server
+  // built without it answers 501 on every schedule route, and showing a
+  // panel whose every button returns "not implemented" would be worse
+  // than showing nothing.
+
+  function stateCell(schedule) {
+    const cell = document.createElement("td");
+    const label = document.createElement("span");
+    label.className = schedule.enabled ? "state-enabled" : "state-paused";
+    label.textContent = schedule.enabled ? "enabled" : "paused";
+    cell.append(label);
+    return cell;
+  }
+
+  // nextRunCell shows when a schedule fires next, with the fire after that
+  // beneath it, and flags an enabled schedule whose time has passed --
+  // which means the scheduler is not running, or is not keeping up.
+  function nextRunCell(schedule) {
+    const cell = document.createElement("td");
+    cell.className = "time-cell";
+
+    const next = document.createElement("div");
+    next.textContent = formatTime(schedule.next_run_at);
+    if (schedule.enabled && new Date(schedule.next_run_at) < new Date()) {
+      next.className = "time-overdue";
+      next.title = "overdue: the scheduler has not fired this yet";
+    }
+    cell.append(next);
+
+    const upcoming = schedule.upcoming || [];
+    if (upcoming.length > 1) {
+      const then = document.createElement("div");
+      then.className = "time-meta";
+      then.textContent = `then ${formatTime(upcoming[1])}`;
+      cell.append(then);
+    }
+    return cell;
+  }
+
+  function renderSchedules(schedules) {
+    if (!schedules || schedules.length === 0) {
+      const row = document.createElement("tr");
+      row.className = "empty-row";
+      const cell = document.createElement("td");
+      cell.colSpan = 6;
+      cell.textContent = "No schedules yet.";
+      row.append(cell);
+      schedulesBody.replaceChildren(row);
+      return;
+    }
+
+    schedulesBody.replaceChildren(
+      ...schedules.map((schedule) => {
+        const row = document.createElement("tr");
+
+        const queueCell = document.createElement("td");
+        queueCell.textContent = schedule.queue;
+
+        const cronCell = document.createElement("td");
+        cronCell.className = "cron-cell";
+        cronCell.textContent = schedule.cron;
+
+        const lastRunCell = document.createElement("td");
+        lastRunCell.className = "time-cell";
+        lastRunCell.textContent = schedule.last_run_at
+          ? formatTime(schedule.last_run_at)
+          : "never";
+
+        const actionsCell = document.createElement("td");
+        const actions = document.createElement("div");
+        actions.className = "row-actions";
+        actions.append(
+          actionButton("Run now", "trigger", schedule.id),
+          actionButton(schedule.enabled ? "Pause" : "Resume",
+            schedule.enabled ? "pause" : "resume", schedule.id),
+          actionButton("Delete", "delete", schedule.id)
+        );
+        actionsCell.append(actions);
+
+        row.append(
+          stateCell(schedule),
+          queueCell,
+          cronCell,
+          nextRunCell(schedule),
+          lastRunCell,
+          actionsCell
+        );
+        return row;
+      })
+    );
+  }
+
+  async function fetchSchedules() {
+    const res = await fetch("/v1/schedules");
+    if (res.status === 501) return false;
+    if (!res.ok) throw new Error(`schedules: ${res.status}`);
+    const body = await res.json();
+    renderSchedules(body.schedules || []);
+    return true;
+  }
+
+  async function refreshSchedules() {
+    try {
+      schedulesError.textContent = "";
+      if (await fetchSchedules()) schedulesPanel.hidden = false;
+    } catch (err) {
+      schedulesError.textContent = err.message;
+    }
+  }
+
+  async function scheduleAction(action, id) {
+    const path = action === "delete"
+      ? `/v1/schedules/${encodeURIComponent(id)}`
+      : `/v1/schedules/${encodeURIComponent(id)}/${action}`;
+    const method = action === "delete" ? "DELETE" : "POST";
+
+    const res = await fetch(path, { method });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `${action}: ${res.status}`);
+    }
+    await refreshSchedules();
+    // Running a schedule now puts a job in the queue, so the job views
+    // are stale the moment it returns.
+    if (action === "trigger") {
+      await Promise.all([refreshJobs(), fetchStats().catch(() => {})]);
+    }
+  }
+
+  async function createSchedule() {
+    const payload = schedulePayload.value;
+    const body = {
+      queue: scheduleQueue.value.trim(),
+      cron: scheduleCron.value.trim(),
+    };
+    // The API takes the payload base64-encoded, as encoding/json does for
+    // any []byte; btoa is the browser's side of that.
+    if (payload) body.payload = btoa(payload);
+
+    const res = await fetch("/v1/schedules", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const failure = await res.json().catch(() => ({}));
+      throw new Error(failure.error || `create schedule: ${res.status}`);
+    }
+    scheduleCron.value = "";
+    schedulePayload.value = "";
+    await refreshSchedules();
+  }
+
+  schedulesBody.addEventListener("click", (event) => {
+    const btn = event.target.closest("button[data-action]");
+    if (!btn) return;
+    btn.disabled = true;
+    scheduleAction(btn.dataset.action, btn.dataset.id)
+      .catch((err) => {
+        schedulesError.textContent = err.message;
+      })
+      .finally(() => {
+        btn.disabled = false;
+      });
+  });
+
+  scheduleForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    schedulesError.textContent = "";
+    createSchedule().catch((err) => {
+      schedulesError.textContent = err.message;
+    });
+  });
+
   function startPollingFallback() {
     setConn("polling");
     setInterval(() => {
@@ -244,6 +428,10 @@
     jobsError.textContent = err.message;
   });
   refreshJobs();
+  refreshSchedules();
   connectEvents();
   setInterval(refreshJobs, JOBS_POLL_INTERVAL_MS);
+  // Schedules change far less often than jobs, and a firing only moves a
+  // timestamp, so they are re-read at a fifth of the job cadence.
+  setInterval(refreshSchedules, SCHEDULES_POLL_INTERVAL_MS);
 })();

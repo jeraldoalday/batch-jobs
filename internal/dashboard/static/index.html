@@ -15,7 +15,51 @@
 <main>
   <section id="stats" class="stat-grid" aria-label="Queue summary"></section>
 
-  <section class="panel">
+  <section id="schedules-panel" class="panel section-gap" aria-label="Schedules" hidden>
+    <div class="panel-head">
+      <h2>Schedules</h2>
+      <span id="schedules-error" class="error" role="alert"></span>
+    </div>
+
+    <form id="schedule-form" class="toolbar">
+      <label class="field">
+        <span>Queue</span>
+        <input id="schedule-queue" type="text" placeholder="reports" required>
+      </label>
+      <label class="field">
+        <span>Cron</span>
+        <input id="schedule-cron" type="text" placeholder="0 3 * * *" required>
+      </label>
+      <label class="field field-wide">
+        <span>Payload</span>
+        <input id="schedule-payload" type="text" placeholder="optional, sent as-is">
+      </label>
+      <button type="submit">Add schedule</button>
+    </form>
+
+    <div class="table-wrap">
+      <table id="schedules-table">
+        <thead>
+          <tr>
+            <th scope="col">State</th>
+            <th scope="col">Queue</th>
+            <th scope="col">Cron</th>
+            <th scope="col">Next run</th>
+            <th scope="col">Last run</th>
+            <th scope="col"></th>
+          </tr>
+        </thead>
+        <tbody id="schedules-body">
+          <tr class="empty-row"><td colspan="6">Loading&hellip;</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel section-gap">
+    <div class="panel-head">
+      <h2>Jobs</h2>
+    </div>
     <div class="toolbar">
       <label class="field">
         <span>Status</span>
