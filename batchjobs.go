@@ -36,6 +36,14 @@
 // restarts: the queue is a database file, and an Engine started against an
 // existing one picks up where the last process left off.
 //
+// Recurring work is a cron expression rather than a job: with
+// Config.Schedules set, AddSchedule registers a template and the Engine
+// enqueues a fresh job from it each time the expression comes due. The
+// handler is an ordinary one -- a scheduled job is an ordinary job by the
+// time a worker sees it.
+//
+//	engine.AddScheduleJSON(ctx, "reports", "0 3 * * 1-5", Request{Window: "daily"})
+//
 // To expose the same queue over HTTP -- for producers in other processes,
 // or the dashboard -- mount Engine.APIHandler. To talk to such a server
 // from elsewhere, use the sibling client package.

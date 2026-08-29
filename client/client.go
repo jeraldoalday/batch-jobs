@@ -1,6 +1,7 @@
 // Package client is a Go client for the batch-jobs HTTP API: enqueueing
 // jobs, looking them up, listing them by status, cancelling and retrying
-// them, reading queue stats, and following the live stats stream.
+// them, managing cron-driven schedules, reading queue stats, and following
+// the live stats stream.
 //
 // It talks to a server run by cmd/batch-jobs-server (or any process
 // serving the same routes) and deliberately shares no types with the
@@ -14,6 +15,12 @@
 //	    client.WithMaxRetries(3),
 //	    client.WithTimeout(30*time.Second),
 //	)
+//
+// The schedule methods -- AddSchedule and friends -- mirror the embedded
+// engine's, so moving a program from embedding the library to talking to a
+// server is a change of transport rather than of concepts. A server built
+// without scheduling reports ErrUnsupported rather than looking like a
+// missing route.
 //
 // Every method takes a context and returns *Error on a non-2xx response;
 // see that type and the sentinel errors in this package for the failure

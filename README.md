@@ -10,12 +10,11 @@ disk-backed queue when needed.
 
 ## Status
 
-Early development. The core queue and job model, both storage backends,
-scheduling, observability, an HTTP API, a dashboard, the first scaling
-controls (multi-queue routing, pool autoscaling, backpressure), persistence
+v0.1.0. The core queue and job model, both storage backends, cron
+scheduling, observability, an HTTP API, a dashboard, the scaling controls
+(multi-queue routing, pool autoscaling, backpressure), persistence
 hardening (job leases, crash recovery, migration tooling), and a public Go
-API (the `batchjobs` engine and the `client` package) are in place. See
-commit history for progress.
+API (the `batchjobs` engine and the `client` package) are in place.
 
 ## Goals
 
@@ -172,37 +171,76 @@ err := c.Watch(ctx, func(stats client.Stats) error {
 
 ## Scheduling
 
-`internal/schedule` adds recurring, cron-driven jobs on top of the queue: a
-`Schedule` is a job template (queue, payload, priority, retry policy) plus a
-standard 5-field cron expression (minute hour day-of-month month
-day-of-week — wildcards, lists, ranges, and `/step` are all supported).
-`internal/schedule/sqlite.Store` persists schedules the same way
-`queue/sqlite.Queue` persists jobs, and `internal/scheduler.Scheduler` is the
-loop that polls a `Store` for due schedules, enqueues each one's job onto a
-`queue.Queue`, and advances it to its next fire time:
+Recurring work is a cron expression plus the job template every firing is
+stamped from. Turn it on with `Config.Schedules` and the engine opens a
+second database for the definitions and runs the loop that enqueues each
+one as it comes due:
 
 ```go
-store, err := sqlitestore.Open("schedules.db")
-if err != nil {
-    log.Fatal(err)
-}
-defer store.Close()
+engine, err := batchjobs.Open(batchjobs.Config{
+    DB:        "jobs.db",
+    Workers:   4,
+    Schedules: true, // schedule definitions land in jobs.schedules.db
+})
+...
+engine.Handle("reports", buildReport)
+engine.Start(ctx)
 
-sch, err := schedule.New("reports", "0 9 * * 1-5", []byte("daily report"))
-if err != nil {
-    log.Fatal(err)
-}
-if err := store.Create(sch); err != nil {
-    log.Fatal(err)
-}
-
-s := &scheduler.Scheduler{Store: store, Queue: q}
-s.Start(ctx)
-defer s.Stop()
+// 3am on weekdays.
+s, err := engine.AddScheduleJSON(ctx, "reports", "0 3 * * 1-5",
+    Request{Window: "daily"},
+    batchjobs.WithMaxRetries(3),
+    batchjobs.WithTimeout(10*time.Minute),
+)
 ```
 
-Firing a schedule enqueues its job and then advances `NextRunAt` as two
-separate steps, so it is at-least-once: a crash between the two re-fires the
+A scheduled job is an ordinary job by the time a worker sees it, so the
+handler needs to know nothing about schedules.
+
+The expression is the standard five fields — minute, hour, day of month,
+month, day of week — with wildcards, lists, ranges, and `/step`.
+`ValidateCron` checks one before you offer to save it, and
+`Schedule.Upcoming(n)` answers the question the expression itself does not:
+
+```go
+times, _ := s.Upcoming(3) // when does this actually run?
+```
+
+The rest of the surface is `GetSchedule`, `ListSchedules`,
+`UpdateSchedule`, `PauseSchedule`, `ResumeSchedule`, `DeleteSchedule`, and
+`TriggerSchedule` — mirrored by the `client` package and by
+`/v1/schedules` over HTTP. Three of them behave in ways worth knowing:
+
+- **`UpdateSchedule` takes an edit function** and moves the next fire time
+  only when the expression actually changed, so adjusting a retry budget
+  cannot silently postpone tonight's run. A new expression is validated
+  before anything is written: an edit that will not parse leaves the stored
+  schedule exactly as it was.
+- **`ResumeSchedule` recomputes the next fire time from now.** Without
+  that, a schedule paused for a week comes back a week overdue and fires
+  the instant it is resumed — exactly the surprise pausing it was meant to
+  avoid. Pausing accumulates no missed firings; the time it was paused for
+  simply does not happen.
+- **`TriggerSchedule` runs a schedule now** without disturbing its
+  timetable: the next fire time does not move and the run is not recorded
+  as a firing. It works on a paused schedule, since pausing stops the
+  timetable rather than the operator.
+
+Schedules live in their own database because the jobs schema and the
+schedules schema have separately versioned migration sets, and one
+`schema_migrations` table cannot track both. The path is derived from
+`Config.DB` — `jobs.db` gives `jobs.schedules.db` — or named outright with
+`Config.SchedulesDB`, which on its own is enough to turn the feature on.
+`Config.SchedulePoll` (default 1s) bounds how late a firing can be.
+
+Under the public surface, `internal/schedule` holds the cron parser and the
+`Schedule` template, `internal/schedule/sqlite.Store` persists them the way
+`queue/sqlite.Queue` persists jobs, `internal/schedule.Manager` holds the
+editing rules shared by the engine and the HTTP API, and
+`internal/scheduler.Scheduler` is the polling loop.
+
+Firing enqueues the job and then advances `NextRunAt` as two separate
+steps, so it is at-least-once: a crash between the two re-fires the
 schedule on the next poll. Handlers for schedule-produced jobs should be
 idempotent, the same requirement any at-least-once queue places on handlers
 in general.
@@ -505,6 +543,14 @@ directly) over REST:
 | GET    | `/v1/jobs?status=&limit=` | List jobs by status              |
 | POST   | `/v1/jobs/{id}/cancel`  | Cancel a pending/retrying job      |
 | POST   | `/v1/jobs/{id}/retry`   | Retry a dead/failed job             |
+| POST   | `/v1/schedules`         | Create a recurring schedule         |
+| GET    | `/v1/schedules`         | List every schedule                 |
+| GET    | `/v1/schedules/{id}`    | Get a schedule by ID                |
+| PATCH  | `/v1/schedules/{id}`    | Edit a schedule (omitted fields are left alone) |
+| DELETE | `/v1/schedules/{id}`    | Delete a schedule (204 even if absent) |
+| POST   | `/v1/schedules/{id}/pause`   | Stop a schedule firing         |
+| POST   | `/v1/schedules/{id}/resume`  | Re-enable it, clearing an overdue fire time |
+| POST   | `/v1/schedules/{id}/trigger` | Run it now, leaving its timetable alone |
 | POST   | `/v1/recover`           | Reclaim jobs orphaned by a dead worker (501 if the store doesn't lease) |
 | GET    | `/v1/stats`             | Job counts by status               |
 | GET    | `/v1/events`            | SSE stream of live stats           |
@@ -536,6 +582,14 @@ go run ./cmd/batch-jobs-server -addr :8080 -db jobs.db
 Lease and recovery behaviour are flags too: `-lease-ttl` (negative disables
 leasing), `-reap-interval` (0 disables the reaper), and `-migrate=false` to
 refuse to start against a database whose schema this binary did not expect.
+`-schedules` serves the schedule routes and runs the cron loop, with
+`-schedules-db` and `-schedule-poll` beside it; without the flag those
+routes stay mounted and answer `501`, so a client is told the server does
+not schedule rather than handed a `404` it cannot tell from a typo.
+
+The schedule routes need a `ScheduleStore`, which `schedule.Manager`
+satisfies — `Engine.APIHandler` wires it for you on an engine opened with
+`Config.Schedules`.
 
 ## Schema migrations
 
@@ -568,9 +622,9 @@ table.
 ## Dashboard
 
 `internal/dashboard` embeds a minimal web UI — stat tiles for the job-count
-breakdown, and a status-filterable job table with cancel/retry actions — as a
-static asset tree with no build step. Mount it on a `Server` by setting
-`Assets`:
+breakdown, a status-filterable job table with cancel/retry actions, and a
+schedules panel — as a static asset tree with no build step. Mount it on a
+`Server` by setting `Assets`:
 
 ```go
 srv := &api.Server{Store: sqliteQueue, Assets: dashboard.FS}
@@ -580,6 +634,13 @@ srv := &api.Server{Store: sqliteQueue, Assets: dashboard.FS}
 disable it. Stat tiles update live over `/v1/events` (Server-Sent Events),
 falling back to polling `/v1/stats` every 5s if the connection drops; the job
 table itself polls `/v1/jobs` on the same interval.
+
+The schedules panel lists every schedule with its expression, next run, and
+last run, and offers Run now / Pause / Resume / Delete plus a small form to
+add one. It stays hidden unless the server answers `/v1/schedules`, since a
+panel whose every button returns "not implemented" is worse than no panel.
+An enabled schedule whose next run has already passed is flagged: that is
+the visible symptom of a scheduler that is not running, or not keeping up.
 
 ## License
 
