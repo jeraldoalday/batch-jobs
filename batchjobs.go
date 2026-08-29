@@ -59,6 +59,7 @@ import (
 	"github.com/jeraldoalday/batch-jobs/internal/job"
 	"github.com/jeraldoalday/batch-jobs/internal/metrics"
 	"github.com/jeraldoalday/batch-jobs/internal/queue/sqlite"
+	"github.com/jeraldoalday/batch-jobs/internal/schedule"
 	schedulesqlite "github.com/jeraldoalday/batch-jobs/internal/schedule/sqlite"
 	"github.com/jeraldoalday/batch-jobs/internal/scheduler"
 	"github.com/jeraldoalday/batch-jobs/internal/worker"
@@ -167,15 +168,16 @@ type Config struct {
 // and Close. Handlers may also be registered while the Engine is running,
 // for a program that learns what it can process as it goes.
 type Engine struct {
-	cfg       Config
-	queue     *sqlite.Queue
-	mux       *worker.Mux
-	pool      *worker.Pool
-	reaper    *sqlite.Reaper
-	schedules *schedulesqlite.Store
-	scheduler *scheduler.Scheduler
-	metrics   *metrics.Metrics
-	logger    *slog.Logger
+	cfg         Config
+	queue       *sqlite.Queue
+	mux         *worker.Mux
+	pool        *worker.Pool
+	reaper      *sqlite.Reaper
+	schedules   *schedulesqlite.Store
+	scheduleMgr *schedule.Manager
+	scheduler   *scheduler.Scheduler
+	metrics     *metrics.Metrics
+	logger      *slog.Logger
 
 	mu      sync.Mutex
 	started bool
@@ -243,6 +245,7 @@ func Open(cfg Config) (*Engine, error) {
 			return nil, fmt.Errorf("batchjobs: open schedules %s: %w", path, err)
 		}
 		e.schedules = store
+		e.scheduleMgr = &schedule.Manager{Store: store, Queue: q}
 	}
 
 	e.pool = &worker.Pool{

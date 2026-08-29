@@ -5,19 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jeraldoalday/batch-jobs/internal/schedule"
 )
 
-// scheduleStore returns the Engine's schedule store, or
+// scheduleManager returns the Engine's schedule manager, or
 // ErrSchedulingDisabled if it was opened without one. Every method below
 // starts here, so the check lives in exactly one place.
-func (e *Engine) scheduleStore() (schedule.Store, error) {
-	if e.schedules == nil {
+func (e *Engine) scheduleManager() (*schedule.Manager, error) {
+	if e.scheduleMgr == nil {
 		return nil, ErrSchedulingDisabled
 	}
-	return e.schedules, nil
+	return e.scheduleMgr, nil
 }
 
 // AddSchedule creates a recurring job: every time cronExpr comes due, a
@@ -29,15 +28,12 @@ func (e *Engine) scheduleStore() (schedule.Store, error) {
 // see scheduleOptions.
 //
 // A new schedule is enabled, so it starts firing as soon as its expression
-// next comes due on a running Engine. Enqueue the first job yourself if it
-// should not wait, or use TriggerSchedule.
+// next comes due on a running Engine. Use TriggerSchedule if the first job
+// should not wait.
 func (e *Engine) AddSchedule(ctx context.Context, name, cronExpr string, payload []byte, opts ...Option) (*Schedule, error) {
-	store, err := e.scheduleStore()
+	mgr, err := e.scheduleManager()
 	if err != nil {
 		return nil, err
-	}
-	if name == "" {
-		return nil, errors.New("batchjobs: queue name is required")
 	}
 	if err := checkContext(ctx); err != nil {
 		return nil, err
@@ -48,11 +44,8 @@ func (e *Engine) AddSchedule(ctx context.Context, name, cronExpr string, payload
 		return nil, err
 	}
 
-	sch, err := schedule.New(name, cronExpr, payload, internalOpts...)
+	sch, err := mgr.Add(name, cronExpr, payload, internalOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("batchjobs: add schedule on %q: %w", name, err)
-	}
-	if err := store.Create(sch); err != nil {
 		return nil, fmt.Errorf("batchjobs: add schedule on %q: %w", name, err)
 	}
 	return convertSchedule(sch), nil
@@ -72,18 +65,15 @@ func (e *Engine) AddScheduleJSON(ctx context.Context, name, cronExpr string, v a
 // GetSchedule returns the schedule with the given ID, or an error wrapping
 // ErrScheduleNotFound.
 func (e *Engine) GetSchedule(ctx context.Context, id string) (*Schedule, error) {
-	store, err := e.scheduleStore()
+	mgr, err := e.scheduleManager()
 	if err != nil {
 		return nil, err
-	}
-	if id == "" {
-		return nil, errors.New("batchjobs: schedule ID is required")
 	}
 	if err := checkContext(ctx); err != nil {
 		return nil, err
 	}
 
-	sch, err := store.Get(id)
+	sch, err := mgr.Get(id)
 	if err != nil {
 		return nil, fmt.Errorf("batchjobs: get schedule %s: %w", id, err)
 	}
@@ -95,7 +85,7 @@ func (e *Engine) GetSchedule(ctx context.Context, id string) (*Schedule, error) 
 // Unlike List, it takes no limit: a schedule set is written by people and
 // stays small, and an operator asking what is scheduled wants all of it.
 func (e *Engine) ListSchedules(ctx context.Context) ([]*Schedule, error) {
-	store, err := e.scheduleStore()
+	mgr, err := e.scheduleManager()
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +93,7 @@ func (e *Engine) ListSchedules(ctx context.Context) ([]*Schedule, error) {
 		return nil, err
 	}
 
-	schedules, err := store.List()
+	schedules, err := mgr.List()
 	if err != nil {
 		return nil, fmt.Errorf("batchjobs: list schedules: %w", err)
 	}
@@ -125,12 +115,9 @@ func (e *Engine) ListSchedules(ctx context.Context) ([]*Schedule, error) {
 // before anything is written: an edit that will not parse leaves the
 // stored schedule exactly as it was.
 func (e *Engine) UpdateSchedule(ctx context.Context, id string, edit func(*Schedule)) (*Schedule, error) {
-	store, err := e.scheduleStore()
+	mgr, err := e.scheduleManager()
 	if err != nil {
 		return nil, err
-	}
-	if id == "" {
-		return nil, errors.New("batchjobs: schedule ID is required")
 	}
 	if edit == nil {
 		return nil, errors.New("batchjobs: UpdateSchedule requires an edit function")
@@ -139,43 +126,41 @@ func (e *Engine) UpdateSchedule(ctx context.Context, id string, edit func(*Sched
 		return nil, err
 	}
 
-	stored, err := store.Get(id)
+	// The edit runs against the public type, so a caller never sees the
+	// internal one; only the fields an edit may change are copied back.
+	updated, err := mgr.Update(id, func(s *schedule.Schedule) error {
+		edited := convertSchedule(s)
+		edit(edited)
+
+		s.Queue = edited.Queue
+		s.Payload = edited.Payload
+		s.Priority = jobPriority(edited.Priority)
+		s.MaxRetries = edited.MaxRetries
+		s.Timeout = edited.Timeout
+		s.CronExpr = edited.Cron
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("batchjobs: update schedule %s: %w", id, err)
 	}
-
-	edited := convertSchedule(stored)
-	edit(edited)
-	if edited.Queue == "" {
-		return nil, fmt.Errorf("batchjobs: update schedule %s: queue name is required", id)
-	}
-
-	stored.Queue = edited.Queue
-	stored.Payload = edited.Payload
-	stored.Priority = jobPriority(edited.Priority)
-	stored.MaxRetries = edited.MaxRetries
-	stored.Timeout = edited.Timeout
-
-	// Only a genuinely changed expression moves the next fire time.
-	// Rewriting it on every edit would let a caller adjusting the retry
-	// budget silently postpone the schedule.
-	if edited.Cron != stored.CronExpr {
-		if err := stored.Reschedule(edited.Cron, time.Now().UTC()); err != nil {
-			return nil, fmt.Errorf("batchjobs: update schedule %s: %w", id, err)
-		}
-	}
-
-	if err := store.Update(stored); err != nil {
-		return nil, fmt.Errorf("batchjobs: update schedule %s: %w", id, err)
-	}
-	return convertSchedule(stored), nil
+	return convertSchedule(updated), nil
 }
 
 // PauseSchedule stops a schedule firing without deleting it. A paused
 // schedule accumulates no missed firings: the time it was paused for
 // simply does not happen.
 func (e *Engine) PauseSchedule(ctx context.Context, id string) error {
-	return e.setScheduleEnabled(ctx, id, false)
+	mgr, err := e.scheduleManager()
+	if err != nil {
+		return err
+	}
+	if err := checkContext(ctx); err != nil {
+		return err
+	}
+	if err := mgr.Pause(id); err != nil {
+		return fmt.Errorf("batchjobs: pause schedule %s: %w", id, err)
+	}
+	return nil
 }
 
 // ResumeSchedule re-enables a paused schedule, recomputing its next fire
@@ -184,62 +169,17 @@ func (e *Engine) PauseSchedule(ctx context.Context, id string) error {
 // Recomputing matters: a schedule paused for a week would otherwise come
 // back a week overdue and fire the instant it is resumed, which is exactly
 // the surprise someone pausing a schedule was trying to avoid. Resuming an
-// already-enabled schedule leaves its next fire time alone, so it is safe
-// to call twice.
+// already-enabled schedule changes nothing, so it is safe to repeat.
 func (e *Engine) ResumeSchedule(ctx context.Context, id string) error {
-	store, err := e.scheduleStore()
+	mgr, err := e.scheduleManager()
 	if err != nil {
 		return err
-	}
-	if id == "" {
-		return errors.New("batchjobs: schedule ID is required")
 	}
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
-
-	stored, err := store.Get(id)
-	if err != nil {
+	if err := mgr.Resume(id); err != nil {
 		return fmt.Errorf("batchjobs: resume schedule %s: %w", id, err)
-	}
-	if stored.Enabled {
-		return nil
-	}
-
-	now := time.Now().UTC()
-	next, err := stored.Advance(now)
-	if err != nil {
-		return fmt.Errorf("batchjobs: resume schedule %s: %w", id, err)
-	}
-	stored.NextRunAt = next
-
-	// The fire time is written before the schedule is re-enabled, so the
-	// scheduler cannot see an enabled schedule still carrying the stale
-	// time it was paused with.
-	if err := store.Update(stored); err != nil {
-		return fmt.Errorf("batchjobs: resume schedule %s: %w", id, err)
-	}
-	if err := store.SetEnabled(id, true); err != nil {
-		return fmt.Errorf("batchjobs: resume schedule %s: %w", id, err)
-	}
-	return nil
-}
-
-// setScheduleEnabled is the shared body of Pause and the enabling half of
-// Resume.
-func (e *Engine) setScheduleEnabled(ctx context.Context, id string, enabled bool) error {
-	store, err := e.scheduleStore()
-	if err != nil {
-		return err
-	}
-	if id == "" {
-		return errors.New("batchjobs: schedule ID is required")
-	}
-	if err := checkContext(ctx); err != nil {
-		return err
-	}
-	if err := store.SetEnabled(id, enabled); err != nil {
-		return fmt.Errorf("batchjobs: set schedule %s enabled=%v: %w", id, enabled, err)
 	}
 	return nil
 }
@@ -251,17 +191,14 @@ func (e *Engine) setScheduleEnabled(ctx context.Context, id string, enabled bool
 // Deleting a schedule that does not exist is not an error, so a cleanup
 // path does not have to look first.
 func (e *Engine) DeleteSchedule(ctx context.Context, id string) error {
-	store, err := e.scheduleStore()
+	mgr, err := e.scheduleManager()
 	if err != nil {
 		return err
-	}
-	if id == "" {
-		return errors.New("batchjobs: schedule ID is required")
 	}
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
-	if err := store.Delete(id); err != nil {
+	if err := mgr.Delete(id); err != nil {
 		return fmt.Errorf("batchjobs: delete schedule %s: %w", id, err)
 	}
 	return nil
@@ -279,24 +216,16 @@ func (e *Engine) DeleteSchedule(ctx context.Context, id string) error {
 // It works on a paused schedule too: pausing stops the timetable, not the
 // operator.
 func (e *Engine) TriggerSchedule(ctx context.Context, id string) (*Job, error) {
-	store, err := e.scheduleStore()
+	mgr, err := e.scheduleManager()
 	if err != nil {
 		return nil, err
-	}
-	if id == "" {
-		return nil, errors.New("batchjobs: schedule ID is required")
 	}
 	if err := checkContext(ctx); err != nil {
 		return nil, err
 	}
 
-	stored, err := store.Get(id)
+	j, err := mgr.Trigger(id)
 	if err != nil {
-		return nil, fmt.Errorf("batchjobs: trigger schedule %s: %w", id, err)
-	}
-
-	j := stored.NewJob()
-	if err := e.queue.Enqueue(j); err != nil {
 		return nil, fmt.Errorf("batchjobs: trigger schedule %s: %w", id, err)
 	}
 	return convert(j), nil
