@@ -47,6 +47,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,6 +59,8 @@ import (
 	"github.com/jeraldoalday/batch-jobs/internal/job"
 	"github.com/jeraldoalday/batch-jobs/internal/metrics"
 	"github.com/jeraldoalday/batch-jobs/internal/queue/sqlite"
+	schedulesqlite "github.com/jeraldoalday/batch-jobs/internal/schedule/sqlite"
+	"github.com/jeraldoalday/batch-jobs/internal/scheduler"
 	"github.com/jeraldoalday/batch-jobs/internal/worker"
 )
 
@@ -119,6 +123,32 @@ type Config struct {
 	// negative value disables the sweep; zero uses the default.
 	ReapInterval time.Duration
 
+	// Schedules turns on recurring, cron-driven jobs: the Engine opens a
+	// second database for schedule definitions and, once started, runs
+	// the loop that enqueues each schedule's job as it comes due.
+	//
+	// It is off by default because it is not free -- it creates a file
+	// and polls it -- and a queue that only ever has jobs pushed into it
+	// should not pay for either. Setting SchedulesDB implies it.
+	Schedules bool
+
+	// SchedulesDB is where schedule definitions live, defaulting to a
+	// file beside DB with ".schedules" inserted before the extension:
+	// "jobs.db" gives "jobs.schedules.db".
+	//
+	// It is a separate database rather than more tables in DB because
+	// the two have separately versioned migration sets, which one
+	// schema_migrations table cannot track. Use MemoryDB for schedules
+	// that need not survive a restart -- which, for a definition an
+	// operator typed in, is rarely what is wanted.
+	SchedulesDB string
+
+	// SchedulePoll is how often the scheduler checks for schedules that
+	// have come due, defaulting to one second. It bounds how late a
+	// firing can be, so it is the knob to turn up on a large schedule
+	// set where being a few seconds late costs nothing.
+	SchedulePoll time.Duration
+
 	// Logger receives the Engine's operational logging, defaulting to
 	// slog.Default().
 	Logger *slog.Logger
@@ -137,13 +167,15 @@ type Config struct {
 // and Close. Handlers may also be registered while the Engine is running,
 // for a program that learns what it can process as it goes.
 type Engine struct {
-	cfg     Config
-	queue   *sqlite.Queue
-	mux     *worker.Mux
-	pool    *worker.Pool
-	reaper  *sqlite.Reaper
-	metrics *metrics.Metrics
-	logger  *slog.Logger
+	cfg       Config
+	queue     *sqlite.Queue
+	mux       *worker.Mux
+	pool      *worker.Pool
+	reaper    *sqlite.Reaper
+	schedules *schedulesqlite.Store
+	scheduler *scheduler.Scheduler
+	metrics   *metrics.Metrics
+	logger    *slog.Logger
 
 	mu      sync.Mutex
 	started bool
@@ -202,6 +234,17 @@ func Open(cfg Config) (*Engine, error) {
 		metrics: m,
 		logger:  logger,
 	}
+
+	if cfg.schedulingEnabled() {
+		path := cfg.schedulesPath()
+		store, err := schedulesqlite.Open(path)
+		if err != nil {
+			q.Close()
+			return nil, fmt.Errorf("batchjobs: open schedules %s: %w", path, err)
+		}
+		e.schedules = store
+	}
+
 	e.pool = &worker.Pool{
 		Queue:       q,
 		Handler:     e.mux.Serve,
@@ -220,6 +263,46 @@ func (e *Engine) workers() int {
 		return e.cfg.Workers
 	}
 	return DefaultWorkers
+}
+
+// schedulingEnabled reports whether the Engine should carry a schedule
+// store. Naming a database is taken as asking for the feature, so a caller
+// who overrides the path does not also have to set the flag.
+func (c Config) schedulingEnabled() bool { return c.Schedules || c.SchedulesDB != "" }
+
+// schedulesPath resolves where schedule definitions live, deriving a
+// sibling of the jobs database when the caller did not say.
+//
+// The derivation inserts ".schedules" before the extension rather than
+// appending to the whole name, so the result keeps the extension an
+// operator's tooling recognizes: "jobs.db" gives "jobs.schedules.db", not
+// "jobs.db.schedules".
+func (c Config) schedulesPath() string {
+	if c.SchedulesDB != "" {
+		return c.SchedulesDB
+	}
+	if c.DB == MemoryDB {
+		return MemoryDB
+	}
+
+	// A DSN's query string is split off first: the suffix belongs on the
+	// filename, and appending it to the parameters would name a database
+	// called "cache=shared.schedules".
+	name, query, hasQuery := strings.Cut(c.DB, "?")
+	ext := filepath.Ext(name)
+	name = strings.TrimSuffix(name, ext) + ".schedules" + ext
+	if hasQuery {
+		return name + "?" + query
+	}
+	return name
+}
+
+// schedulePoll resolves the scheduler's poll cadence from the config.
+func (e *Engine) schedulePoll() time.Duration {
+	if e.cfg.SchedulePoll > 0 {
+		return e.cfg.SchedulePoll
+	}
+	return scheduler.DefaultPollInterval
 }
 
 // backoff builds the retry schedule from the config, jittered so a batch of
@@ -315,6 +398,17 @@ func (e *Engine) Start(ctx context.Context) error {
 		// process that crashed, that process's jobs are orphaned now.
 		e.reaper.Start(ctx)
 	}
+
+	if e.schedules != nil {
+		e.scheduler = &scheduler.Scheduler{
+			Store:        e.schedules,
+			Queue:        e.queue,
+			PollInterval: e.schedulePoll(),
+			Logger:       e.logger,
+			Metrics:      e.metrics,
+		}
+		e.scheduler.Start(ctx)
+	}
 	return nil
 }
 
@@ -345,9 +439,14 @@ func (e *Engine) Stop() {
 		return
 	}
 	e.stopped = true
-	reaper, cancel := e.reaper, e.cancel
+	reaper, sched, cancel := e.reaper, e.scheduler, e.cancel
 	e.mu.Unlock()
 
+	// The scheduler stops first so no new firing lands in the queue
+	// while the pool is draining the ones already there.
+	if sched != nil {
+		sched.Stop()
+	}
 	if reaper != nil {
 		reaper.Stop()
 	}
@@ -369,10 +468,18 @@ func (e *Engine) Close() error {
 	}
 	e.closed = true
 
+	// Both stores are closed even if the first fails, so a database is
+	// never left held open by an error closing the other one.
+	var errs []error
 	if err := e.queue.Close(); err != nil {
-		return fmt.Errorf("batchjobs: close %s: %w", e.cfg.DB, err)
+		errs = append(errs, fmt.Errorf("batchjobs: close %s: %w", e.cfg.DB, err))
 	}
-	return nil
+	if e.schedules != nil {
+		if err := e.schedules.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("batchjobs: close schedules %s: %w", e.cfg.schedulesPath(), err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // MetricsHandler serves the Engine's Prometheus collectors in the text

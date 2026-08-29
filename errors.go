@@ -1,7 +1,10 @@
 package batchjobs
 
 import (
+	"errors"
+
 	"github.com/jeraldoalday/batch-jobs/internal/queue"
+	"github.com/jeraldoalday/batch-jobs/internal/schedule"
 	"github.com/jeraldoalday/batch-jobs/internal/worker"
 )
 
@@ -34,6 +37,19 @@ var (
 	// normally arrives as a job's LastError, naming the queue whose
 	// registration is missing.
 	ErrNoHandler = worker.ErrNoHandler
+
+	// ErrScheduleNotFound reports that no schedule with the given ID
+	// exists. It is deliberately distinct from ErrNotFound: a caller
+	// holding both an ID for a job and an ID for a schedule should not
+	// have one lookup's miss look like the other's.
+	ErrScheduleNotFound = schedule.ErrNotFound
+
+	// ErrSchedulingDisabled reports that a schedule method was called on
+	// an Engine opened without Config.Schedules. It is a wiring mistake
+	// rather than a runtime condition -- the answer is to turn the
+	// feature on, not to retry -- so it is reported rather than the
+	// Engine quietly opening a schedule database nobody asked for.
+	ErrSchedulingDisabled = errors.New("batchjobs: scheduling is disabled; set Config.Schedules")
 )
 
 // Permanent marks an error from a Handler as one that retrying can never
