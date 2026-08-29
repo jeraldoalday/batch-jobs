@@ -4,7 +4,8 @@ info:
   description: >
     REST API for enqueueing, inspecting, listing, cancelling, and retrying
     jobs, backed by a queue/sqlite.Queue (or any internal/api.Store
-    implementation).
+    implementation), plus cron-driven recurring schedules when the server
+    is configured with a schedule store.
   version: "1.0.0"
 servers:
   - url: http://localhost:8080
@@ -180,6 +181,238 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalServerError"
+  /v1/schedules:
+    post:
+      summary: Create a recurring schedule
+      description: >
+        Registers a cron expression and the job template every firing is
+        stamped from. Each time the expression comes due, the server
+        enqueues a fresh job carrying the schedule's payload, priority,
+        retry budget, and timeout onto its queue.
+
+
+        A new schedule is enabled, so it starts firing as soon as its
+        expression next comes due. Use the trigger endpoint if the first
+        job should not wait for that.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateScheduleRequest"
+      responses:
+        "201":
+          description: Schedule created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/SchedulingDisabled"
+    get:
+      summary: List every schedule
+      description: >
+        Returns all schedules, most recently created first. There is no
+        limit or filter: a schedule set is written by people and stays
+        small, and an operator asking what is scheduled wants all of it.
+      responses:
+        "200":
+          description: The schedules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schedules:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Schedule"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/SchedulingDisabled"
+  /v1/schedules/{id}:
+    get:
+      summary: Get a schedule by ID
+      parameters:
+        - $ref: "#/components/parameters/ScheduleID"
+      responses:
+        "200":
+          description: The schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/ScheduleNotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/SchedulingDisabled"
+    patch:
+      summary: Edit a schedule
+      description: >
+        Applies a partial edit. A field the body omits is left as it is
+        rather than reset to its zero value, which is what makes this a
+        patch rather than a replacement.
+
+
+        Changing `cron` recomputes `next_run_at` from now; a body that
+        does not change it leaves the next firing where it was, so
+        adjusting a retry budget cannot silently postpone tonight's run.
+        An expression that will not parse is rejected with 400 and nothing
+        is written, so the stored schedule is never left half edited.
+
+
+        Whether a schedule is enabled is not editable here: that belongs
+        to the pause and resume endpoints, so an edit built from a copy
+        read before a pause cannot silently resurrect it.
+      parameters:
+        - $ref: "#/components/parameters/ScheduleID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateScheduleRequest"
+      responses:
+        "200":
+          description: The schedule as it stands after the edit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/ScheduleNotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/SchedulingDisabled"
+    delete:
+      summary: Delete a schedule
+      description: >
+        Removes the schedule permanently. Jobs it has already produced are
+        untouched: they are ordinary jobs by then.
+
+
+        Deleting a schedule that does not exist also returns 204, which
+        makes the call idempotent: a client retrying after a lost response
+        gets the same answer rather than a 404 it has to interpret.
+      parameters:
+        - $ref: "#/components/parameters/ScheduleID"
+      responses:
+        "204":
+          description: Deleted, or already absent
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/SchedulingDisabled"
+  /v1/schedules/{id}/pause:
+    post:
+      summary: Stop a schedule firing
+      description: >
+        A paused schedule accumulates no missed firings: the time it is
+        paused for simply does not happen. Pausing an already-paused
+        schedule is a no-op.
+      parameters:
+        - $ref: "#/components/parameters/ScheduleID"
+      responses:
+        "204":
+          description: Paused
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/ScheduleNotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/SchedulingDisabled"
+  /v1/schedules/{id}/resume:
+    post:
+      summary: Re-enable a paused schedule
+      description: >
+        Recomputes `next_run_at` from now before re-enabling. Without
+        that, a schedule paused for a week would come back a week overdue
+        and fire the instant it resumed -- exactly the surprise pausing it
+        was meant to avoid. Resuming an already-enabled schedule changes
+        nothing.
+      parameters:
+        - $ref: "#/components/parameters/ScheduleID"
+      responses:
+        "204":
+          description: Resumed
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/ScheduleNotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/SchedulingDisabled"
+  /v1/schedules/{id}/trigger:
+    post:
+      summary: Run a schedule now
+      description: >
+        Enqueues the job the schedule produces immediately and returns it,
+        leaving the timetable untouched: `next_run_at` does not move and
+        `last_run_at` is not set, because this was not a firing.
+
+
+        It is what "run it now" means -- checking a newly written schedule
+        without waiting until tomorrow, or re-running a nightly job after
+        fixing whatever it was waiting on. It works on a paused schedule
+        too, since pausing stops the timetable rather than the operator.
+      parameters:
+        - $ref: "#/components/parameters/ScheduleID"
+      responses:
+        "201":
+          description: The job the schedule produced
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/ScheduleNotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/SchedulingDisabled"
+        "503":
+          $ref: "#/components/responses/QueueFull"
   /v1/recover:
     post:
       summary: Reclaim jobs whose worker died holding them
@@ -297,6 +530,12 @@ components:
       required: true
       schema:
         type: string
+    ScheduleID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
   schemas:
     Status:
       type: string
@@ -384,6 +623,113 @@ components:
             with the same (queue, idempotency_key) pair is a no-op that
             returns the original job (200) instead of creating a new one
             (201).
+    Cron:
+      type: string
+      description: >
+        A standard five-field cron expression: minute, hour, day of month,
+        month, day of week. Each field accepts "*", a single value, a
+        comma-separated list, a "lo-hi" range, or any of those with a
+        "/step" suffix. Day-of-month and day-of-week combine per standard
+        cron semantics: if only one is restricted it alone decides whether
+        a day matches; if both are, a day matches when either does.
+      example: "0 3 * * 1-5"
+    Schedule:
+      type: object
+      properties:
+        id:
+          type: string
+        queue:
+          type: string
+          description: The queue every job this schedule produces goes onto.
+        cron:
+          $ref: "#/components/schemas/Cron"
+        payload:
+          type: string
+          format: byte
+          description: Base64-encoded payload copied onto every produced job.
+        priority:
+          $ref: "#/components/schemas/Priority"
+        max_retries:
+          type: integer
+        timeout_seconds:
+          type: integer
+          description: >
+            Bounds a single attempt of every produced job. 0 means no
+            per-attempt timeout.
+        enabled:
+          type: boolean
+          description: >
+            False for a paused schedule, which is skipped rather than
+            accumulating missed firings.
+        next_run_at:
+          type: string
+          format: date-time
+          description: >
+            When the schedule is next due. A time in the past means the
+            scheduler has not caught up yet, which on a healthy server is
+            momentary.
+        last_run_at:
+          type: string
+          format: date-time
+          description: >
+            When the schedule last fired. Absent entirely -- rather than
+            the zero time -- for one that never has.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        upcoming:
+          type: array
+          description: >
+            The next three fire times, starting at next_run_at. It answers
+            the question a cron expression by itself does not: when does
+            this actually run.
+          items:
+            type: string
+            format: date-time
+    CreateScheduleRequest:
+      type: object
+      required: [queue, cron]
+      properties:
+        queue:
+          type: string
+        cron:
+          $ref: "#/components/schemas/Cron"
+        payload:
+          type: string
+          format: byte
+        priority:
+          $ref: "#/components/schemas/Priority"
+        max_retries:
+          type: integer
+          minimum: 0
+        timeout_seconds:
+          type: integer
+          minimum: 0
+    UpdateScheduleRequest:
+      type: object
+      description: >
+        A partial edit. Every property is optional, and an omitted one is
+        left unchanged rather than reset.
+      properties:
+        queue:
+          type: string
+          minLength: 1
+        cron:
+          $ref: "#/components/schemas/Cron"
+        payload:
+          type: string
+          format: byte
+        priority:
+          $ref: "#/components/schemas/Priority"
+        max_retries:
+          type: integer
+          minimum: 0
+        timeout_seconds:
+          type: integer
+          minimum: 0
     Error:
       type: object
       properties:
@@ -404,6 +750,22 @@ components:
             $ref: "#/components/schemas/Error"
     NotFound:
       description: No job with the given ID
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ScheduleNotFound:
+      description: No schedule with the given ID
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    SchedulingDisabled:
+      description: >
+        This server was not configured with a schedule store. The routes
+        are still mounted and answer 501 rather than 404, so a client can
+        tell "this server does not schedule" from "you asked for a path
+        that does not exist".
       content:
         application/json:
           schema:
