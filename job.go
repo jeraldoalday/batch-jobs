@@ -245,6 +245,10 @@ func WithIdempotencyKey(key string) Option {
 	return func(o *options) { o.idempotencyKey = key }
 }
 
+// jobPriority converts a public priority to the internal one, so the
+// schedule and job builders share a single spelling of the conversion.
+func jobPriority(p Priority) job.Priority { return job.Priority(p) }
+
 // build applies opts and returns the internal job they describe.
 func build(queue string, payload []byte, opts []Option) *job.Job {
 	var o options
