@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -207,4 +208,33 @@ func OpenWith(path string, opts Options) (*sql.DB, error) {
 	db.SetConnMaxLifetime(0)
 
 	return db, nil
+}
+
+// SiblingPath derives a second database path from the first by inserting
+// suffix before the extension: "jobs.db" with ".schedules" gives
+// "jobs.schedules.db".
+//
+// Two stores in this module cannot share one database file -- each has its
+// own versioned migration set, and one schema_migrations table cannot
+// track both -- so a program that wants a second store beside the first
+// needs a second path. Deriving it beats demanding it: the file lands next
+// to the one it belongs with, under a name that says so.
+//
+// The suffix goes before the extension rather than after the whole name so
+// the result keeps the extension an operator's tooling recognizes. A DSN's
+// query string is split off first, or the suffix would land on the
+// parameters and name a database "cache=shared.schedules". MemoryPath has
+// no filename to modify and is returned unchanged, which is correct: each
+// pool opened against it gets a database of its own anyway.
+func SiblingPath(path, suffix string) string {
+	if path == "" || path == MemoryPath {
+		return path
+	}
+	name, query, hasQuery := strings.Cut(path, "?")
+	ext := filepath.Ext(name)
+	name = strings.TrimSuffix(name, ext) + suffix + ext
+	if hasQuery {
+		return name + "?" + query
+	}
+	return name
 }

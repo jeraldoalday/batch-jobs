@@ -367,3 +367,92 @@ func TestOpenRejectsAnEmptyPath(t *testing.T) {
 		}
 	}
 }
+
+func TestSiblingPath(t *testing.T) {
+	tests := []struct {
+		name   string
+		path   string
+		suffix string
+		want   string
+	}{
+		{
+			name:   "extension preserved",
+			path:   "jobs.db",
+			suffix: ".schedules",
+			want:   "jobs.schedules.db",
+		},
+		{
+			name:   "directory untouched",
+			path:   "/var/lib/batch/jobs.db",
+			suffix: ".schedules",
+			want:   "/var/lib/batch/jobs.schedules.db",
+		},
+		{
+			name:   "no extension",
+			path:   "jobs",
+			suffix: ".schedules",
+			want:   "jobs.schedules",
+		},
+		{
+			name: "a dot in a directory is not an extension",
+			// filepath.Ext looks only after the last separator, so the
+			// dot in the directory name must not be mistaken for one.
+			path:   "/var/my.data/jobs",
+			suffix: ".schedules",
+			want:   "/var/my.data/jobs.schedules",
+		},
+		{
+			name:   "query string kept on the end",
+			path:   "file:test?mode=memory&cache=shared",
+			suffix: ".schedules",
+			want:   "file:test.schedules?mode=memory&cache=shared",
+		},
+		{
+			name:   "memory has no filename to modify",
+			path:   MemoryPath,
+			suffix: ".schedules",
+			want:   MemoryPath,
+		},
+		{
+			name:   "empty stays empty for Open to reject",
+			path:   "",
+			suffix: ".schedules",
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SiblingPath(tt.path, tt.suffix); got != tt.want {
+				t.Errorf("SiblingPath(%q, %q) = %q, want %q", tt.path, tt.suffix, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSiblingPathsOpenSeparateDatabases(t *testing.T) {
+	dir := t.TempDir()
+	primary := filepath.Join(dir, "jobs.db")
+	sibling := SiblingPath(primary, ".schedules")
+
+	first, err := Open(primary)
+	if err != nil {
+		t.Fatalf("Open(%q): %v", primary, err)
+	}
+	defer first.Close()
+	if _, err := first.Exec(`CREATE TABLE only_here (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	second, err := Open(sibling)
+	if err != nil {
+		t.Fatalf("Open(%q): %v", sibling, err)
+	}
+	defer second.Close()
+
+	// The whole point of the derivation is that the two are genuinely
+	// separate files, so each can carry its own migration history.
+	if _, err := second.Exec(`SELECT 1 FROM only_here`); err == nil {
+		t.Fatal("the sibling database sees the primary's table; want two separate files")
+	}
+}

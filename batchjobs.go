@@ -47,8 +47,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -62,6 +60,7 @@ import (
 	"github.com/jeraldoalday/batch-jobs/internal/schedule"
 	schedulesqlite "github.com/jeraldoalday/batch-jobs/internal/schedule/sqlite"
 	"github.com/jeraldoalday/batch-jobs/internal/scheduler"
+	"github.com/jeraldoalday/batch-jobs/internal/sqlitex"
 	"github.com/jeraldoalday/batch-jobs/internal/worker"
 )
 
@@ -275,29 +274,11 @@ func (c Config) schedulingEnabled() bool { return c.Schedules || c.SchedulesDB !
 
 // schedulesPath resolves where schedule definitions live, deriving a
 // sibling of the jobs database when the caller did not say.
-//
-// The derivation inserts ".schedules" before the extension rather than
-// appending to the whole name, so the result keeps the extension an
-// operator's tooling recognizes: "jobs.db" gives "jobs.schedules.db", not
-// "jobs.db.schedules".
 func (c Config) schedulesPath() string {
 	if c.SchedulesDB != "" {
 		return c.SchedulesDB
 	}
-	if c.DB == MemoryDB {
-		return MemoryDB
-	}
-
-	// A DSN's query string is split off first: the suffix belongs on the
-	// filename, and appending it to the parameters would name a database
-	// called "cache=shared.schedules".
-	name, query, hasQuery := strings.Cut(c.DB, "?")
-	ext := filepath.Ext(name)
-	name = strings.TrimSuffix(name, ext) + ".schedules" + ext
-	if hasQuery {
-		return name + "?" + query
-	}
-	return name
+	return sqlitex.SiblingPath(c.DB, ".schedules")
 }
 
 // schedulePoll resolves the scheduler's poll cadence from the config.

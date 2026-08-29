@@ -22,6 +22,9 @@ import (
 	"github.com/jeraldoalday/batch-jobs/internal/dashboard"
 	"github.com/jeraldoalday/batch-jobs/internal/metrics"
 	"github.com/jeraldoalday/batch-jobs/internal/queue/sqlite"
+	"github.com/jeraldoalday/batch-jobs/internal/schedule"
+	schedulesqlite "github.com/jeraldoalday/batch-jobs/internal/schedule/sqlite"
+	"github.com/jeraldoalday/batch-jobs/internal/scheduler"
 	"github.com/jeraldoalday/batch-jobs/internal/sqlitemigrate"
 	"github.com/jeraldoalday/batch-jobs/internal/sqlitex"
 )
@@ -36,6 +39,9 @@ func main() {
 	enableDashboard := flag.Bool("dashboard", true, "serve the web dashboard at /")
 	leaseTTL := flag.Duration("lease-ttl", sqlite.DefaultLeaseTTL, "how long a claimed job stays claimed without a heartbeat before it can be recovered (negative disables leasing)")
 	reapInterval := flag.Duration("reap-interval", sqlite.DefaultReapInterval, "how often to reclaim jobs whose worker died holding them (0 disables the reaper)")
+	enableSchedules := flag.Bool("schedules", false, "serve the /v1/schedules API and run the cron scheduler")
+	schedulesDB := flag.String("schedules-db", "", `SQLite database for schedule definitions (default: the -db path with ".schedules" before the extension)`)
+	schedulePoll := flag.Duration("schedule-poll", scheduler.DefaultPollInterval, "how often to check for schedules that have come due")
 	autoMigrate := flag.Bool("migrate", true, "apply pending schema migrations on startup; with -migrate=false, refuse to start against a database that needs them")
 	shutdownTimeout := flag.Duration("shutdown-timeout", 10*time.Second, "how long to wait for in-flight requests to finish on SIGINT/SIGTERM before forcing shutdown")
 	flag.Parse()
@@ -79,12 +85,33 @@ func main() {
 		logger.Warn("failed to register expired lease gauge", "error", err)
 	}
 
+	var scheduleMgr *schedule.Manager
+	if *enableSchedules {
+		path := *schedulesDB
+		if path == "" {
+			path = sqlitex.SiblingPath(*dbPath, ".schedules")
+		}
+		store, err := schedulesqlite.Open(path)
+		if err != nil {
+			logger.Error("failed to open schedules database", "path", path, "error", err)
+			os.Exit(1)
+		}
+		defer store.Close()
+		scheduleMgr = &schedule.Manager{Store: store, Queue: q}
+		logger.Info("batch-jobs-server: scheduling enabled", "schedules_db", path, "poll", *schedulePoll)
+	}
+
 	srv := &api.Server{
 		Store:     q,
 		Logger:    logger,
 		Metrics:   m,
 		AuthToken: *authToken,
 		RateLimit: api.RateLimit{RPS: *rateRPS, Burst: *rateBurst},
+	}
+	// Left nil without -schedules, which is what makes the schedule
+	// routes answer 501 rather than pretending to work.
+	if scheduleMgr != nil {
+		srv.ScheduleStore = scheduleMgr
 	}
 	if *enableDashboard {
 		srv.Assets = dashboard.FS
@@ -102,6 +129,18 @@ func main() {
 		reaper := &sqlite.Reaper{Queue: q, Interval: *reapInterval, Logger: logger, Metrics: m}
 		reaper.Start(ctx)
 		defer reaper.Stop()
+	}
+
+	if scheduleMgr != nil {
+		sched := &scheduler.Scheduler{
+			Store:        scheduleMgr.Store,
+			Queue:        q,
+			PollInterval: *schedulePoll,
+			Logger:       logger,
+			Metrics:      m,
+		}
+		sched.Start(ctx)
+		defer sched.Stop()
 	}
 
 	serveErr := make(chan error, 1)
