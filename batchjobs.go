@@ -157,6 +157,24 @@ type Config struct {
 	// set where being a few seconds late costs nothing.
 	SchedulePoll time.Duration
 
+	// Retention bounds how long finished jobs are kept. The zero value
+	// keeps every job the Engine has ever run, which is the historical
+	// behaviour and remains the default; see Retention for why the
+	// durations are per status.
+	//
+	// With a policy set, the Engine prunes on an interval once started,
+	// and Engine.Prune runs a pass on demand.
+	Retention Retention
+
+	// PruneInterval is how often the Engine deletes finished jobs that
+	// Retention has expired, defaulting to an hour. A negative value
+	// leaves pruning to explicit Engine.Prune calls, for a deployment
+	// that would rather run it from one place -- a cron entry, an
+	// admin endpoint -- than from every process holding the queue.
+	//
+	// It has no effect without Retention: there is nothing to prune.
+	PruneInterval time.Duration
+
 	// Logger receives the Engine's operational logging, defaulting to
 	// slog.Default().
 	Logger *slog.Logger
@@ -180,6 +198,7 @@ type Engine struct {
 	mux         *worker.Mux
 	pool        *worker.Pool
 	reaper      *sqlite.Reaper
+	janitor     *sqlite.Janitor
 	schedules   *schedulesqlite.Store
 	scheduleMgr *schedule.Manager
 	scheduler   *scheduler.Scheduler
@@ -212,6 +231,12 @@ func Open(cfg Config) (*Engine, error) {
 	if cfg.RetryJitter < 0 || cfg.RetryJitter > 1 {
 		return nil, fmt.Errorf("batchjobs: RetryJitter %v must be in [0, 1]", cfg.RetryJitter)
 	}
+	// Rejected at Open rather than at the first sweep: a policy that
+	// would delete the wrong thing should stop the program starting, not
+	// surface an hour later in a log line nobody is reading.
+	if err := cfg.Retention.internal().Validate(); err != nil {
+		return nil, fmt.Errorf("batchjobs: %w", err)
+	}
 
 	logger := cfg.Logger
 	if logger == nil {
@@ -234,6 +259,36 @@ func Open(cfg Config) (*Engine, error) {
 		// reporting rather than silently running without depth metrics.
 		q.Close()
 		return nil, fmt.Errorf("batchjobs: register queue depth gauge: %w", err)
+	}
+
+	// Registered whether or not a policy is set, because the queue with
+	// no policy is the one whose history grows without bound -- these
+	// gauges are how that shows up before the disk does.
+	if err := m.RegisterRetainedJobs("default", func() int {
+		n, err := q.Retained()
+		if err != nil {
+			// A scrape is not the place to surface a database error.
+			logger.Debug("batchjobs: counting retained jobs failed", "error", err)
+			return 0
+		}
+		return n
+	}); err != nil {
+		q.Close()
+		return nil, fmt.Errorf("batchjobs: register retained jobs gauge: %w", err)
+	}
+	if err := m.RegisterOldestRetainedAge("default", func() float64 {
+		oldest, err := q.OldestRetained()
+		if err != nil {
+			logger.Debug("batchjobs: finding the oldest retained job failed", "error", err)
+			return 0
+		}
+		if oldest.IsZero() {
+			return 0
+		}
+		return time.Since(oldest).Seconds()
+	}); err != nil {
+		q.Close()
+		return nil, fmt.Errorf("batchjobs: register oldest retained job gauge: %w", err)
 	}
 
 	e := &Engine{
@@ -391,6 +446,23 @@ func (e *Engine) Start(ctx context.Context) error {
 		e.reaper.Start(ctx)
 	}
 
+	if interval := e.pruneInterval(); interval > 0 && e.cfg.Retention.Enabled() {
+		e.janitor = &sqlite.Janitor{
+			Queue:     e.queue,
+			Retention: e.cfg.Retention.internal(),
+			Interval:  interval,
+			Logger:    e.logger,
+			Metrics:   e.metrics,
+		}
+		// Start validated the same policy at Open, so the only way this
+		// fails now is a bug; report it rather than running an Engine
+		// whose history silently never gets pruned.
+		if err := e.janitor.Start(ctx); err != nil {
+			e.janitor = nil
+			return fmt.Errorf("batchjobs: start janitor: %w", err)
+		}
+	}
+
 	if e.schedules != nil {
 		e.scheduler = &scheduler.Scheduler{
 			Store:        e.schedules,
@@ -417,6 +489,19 @@ func (e *Engine) reapInterval() time.Duration {
 	}
 }
 
+// pruneInterval resolves the prune cadence, where a negative value leaves
+// pruning to explicit calls and zero means the queue's own default.
+func (e *Engine) pruneInterval() time.Duration {
+	switch {
+	case e.cfg.PruneInterval < 0:
+		return 0
+	case e.cfg.PruneInterval == 0:
+		return sqlite.DefaultPruneInterval
+	default:
+		return e.cfg.PruneInterval
+	}
+}
+
 // Stop stops accepting new work and blocks until every in-flight handler
 // has returned, so a job is never abandoned half-done at shutdown. It is
 // safe to call more than once, and safe to call on an Engine that was never
@@ -431,7 +516,7 @@ func (e *Engine) Stop() {
 		return
 	}
 	e.stopped = true
-	reaper, sched, cancel := e.reaper, e.scheduler, e.cancel
+	reaper, sched, janitor, cancel := e.reaper, e.scheduler, e.janitor, e.cancel
 	e.mu.Unlock()
 
 	// The scheduler stops first so no new firing lands in the queue
@@ -441,6 +526,11 @@ func (e *Engine) Stop() {
 	}
 	if reaper != nil {
 		reaper.Stop()
+	}
+	// The janitor stops before the pool drains, so a shutdown is not
+	// held up by a prune pass working through a large backlog.
+	if janitor != nil {
+		janitor.Stop()
 	}
 	e.pool.Stop()
 	if cancel != nil {

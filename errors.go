@@ -44,6 +44,13 @@ var (
 	// have one lookup's miss look like the other's.
 	ErrScheduleNotFound = schedule.ErrNotFound
 
+	// ErrNoRetention reports that a prune was asked for on an Engine
+	// opened without Config.Retention. Keeping every job forever is the
+	// default, so this is a request to delete history arriving at an
+	// Engine that has not been told what may be deleted -- a wiring gap
+	// rather than a runtime condition, and not something to guess at.
+	ErrNoRetention = queue.ErrNoRetention
+
 	// ErrSchedulingDisabled reports that a schedule method was called on
 	// an Engine opened without Config.Schedules. It is a wiring mistake
 	// rather than a runtime condition -- the answer is to turn the
