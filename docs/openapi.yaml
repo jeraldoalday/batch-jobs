@@ -465,6 +465,79 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/prune:
+    post:
+      summary: Delete finished jobs the retention policy has expired
+      description: >
+        A durable queue keeps every job it has ever run, so its history
+        grows without bound until something is allowed to delete from it.
+        Pruning removes finished jobs -- succeeded, failed, dead, or
+        cancelled -- that have sat in that status longer than the server's
+        retention policy allows. Jobs that have not finished are never
+        touched, however old they are.
+
+
+        The policy is the server's own and cannot be supplied in the
+        request: a caller free to name their own retention could delete
+        every finished job in the queue by asking for a retention of zero.
+        What this endpoint offers is the timing -- run the configured
+        policy now rather than at the next scheduled pass, for a
+        maintenance window or a disk that is filling.
+
+
+        The pass deletes in batches, giving up the database's write lock
+        between them, so it slows the queue rather than stopping it. It is
+        safe to call while workers are running.
+      responses:
+        "200":
+          description: Prune pass complete
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  succeeded:
+                    type: integer
+                    description: Completed jobs deleted.
+                    example: 1204
+                  failed:
+                    type: integer
+                    description: Permanently failed jobs deleted.
+                    example: 3
+                  dead:
+                    type: integer
+                    description: Dead-lettered jobs deleted.
+                    example: 0
+                  cancelled:
+                    type: integer
+                    description: Cancelled jobs deleted.
+                    example: 17
+                  total:
+                    type: integer
+                    description: Job records removed altogether.
+                    example: 1224
+                  retained:
+                    type: integer
+                    description: >
+                      Finished jobs the queue still holds after the pass.
+                      It distinguishes a history now within its policy from
+                      one merely smaller than it was.
+                    example: 96
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          description: >
+            This server has no retention policy configured, or its store
+            does not keep finished jobs at all. The error message says
+            which.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/events:
     get:
       summary: Live job-count stats via Server-Sent Events
