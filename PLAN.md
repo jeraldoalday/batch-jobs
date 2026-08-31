@@ -222,3 +222,37 @@
 - Release: README rewritten around the public scheduling API, the OpenAPI
   spec extended, runnable examples for both packages, CHANGELOG cut over
   to v0.1.0, and the v0.1.0 tag
+
+## Day 15 — Retention (done)
+
+- Nothing in the system ever deleted a job. A durable queue kept every
+  row it had ever written, so the database grew for as long as the queue
+  was used and the indexes that make dequeue fast grew with it — the one
+  unbounded resource left after v0.1.0
+- `queue.Retention`: a maximum age per terminal status, because the four
+  mean different things — a success is an audit trail whose value decays
+  in hours, a dead-lettered job is a work list whose row is the only
+  record the work was meant to happen. The zero value keeps everything,
+  so upgrading changes nothing; a negative duration is rejected rather
+  than clamped, since "forever" and "immediately" are opposites
+- `queue/sqlite.Queue.Prune` deletes in bounded batches rather than one
+  statement: SQLite has a single writer, and an unbounded delete would
+  block every enqueue and claim in every process sharing the file for as
+  long as it took to clear the history. The cutoff is fixed for the whole
+  pass so it cannot chase its own tail. Migration `0005` adds
+  `(status, updated_at)` to make each batch a range scan, and drops the
+  `(status)` index it subsumes — which also stops `List` sorting every
+  job in a status to return a page of fifty
+- `sqlite.Janitor` mirrors `sqlite.Reaper`, with two deliberate
+  differences: it refuses to start on a policy that would delete nothing,
+  and its first sweep waits out an interval instead of running at
+  startup, which is the opposite of the reaper and for the opposite
+  reason
+- `Retained`/`OldestRetained` and their gauges, because the size of the
+  history and its age fail differently: a count sits still while a queue
+  that has gone quiet ages past its policy
+- The same surface on the Engine (`Config.Retention`, `PruneInterval`,
+  `Prune`), over HTTP (`POST /v1/prune`), in the client, and in
+  `cmd/batch-jobs-server`. The policy lives on the server and is not a
+  request parameter: a caller free to name their own retention could
+  delete every finished job by asking for a retention of zero

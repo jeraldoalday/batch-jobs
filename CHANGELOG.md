@@ -8,6 +8,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Entries describe behaviour a user can observe, not the commits that produced
 it.
 
+## [Unreleased]
+
+### Added
+
+- **Retention.** A durable queue kept every job it had ever run, so its
+  database grew for as long as the queue was used. `batchjobs.Retention`
+  says how long finished jobs are kept, per terminal status: successes are
+  an audit trail whose value decays in hours, while dead-lettered jobs are
+  a work list, so `DefaultRetention` keeps those forever. The zero value
+  keeps everything, so nothing changes for an existing deployment until it
+  asks for something else, and a negative duration is rejected at `Open`
+  rather than guessed at.
+- `batchjobs`: `Config.Retention` and `Config.PruneInterval`, a janitor
+  that prunes on that interval once the Engine is started, and
+  `Engine.Prune` for running a pass on demand — which is what a fleet
+  sharing one database wants, with `PruneInterval` negative, since one pass
+  already deletes everything eligible.
+- `batchjobs`: `Engine.Retained` and `Engine.OldestRetained`, the two
+  numbers that say whether retention is keeping up. They differ: the count
+  can sit still while the history quietly ages past its policy.
+- `POST /v1/prune` and `client.Prune`, running the server's configured
+  policy now rather than at its next pass. The policy is deliberately not a
+  request parameter, since a caller free to name their own could delete
+  every finished job by asking for a retention of zero. A server without
+  one answers 501, as the schedule routes do.
+- `cmd/batch-jobs-server`: `-retain-succeeded`, `-retain-failed`,
+  `-retain-dead`, `-retain-cancelled`, `-prune-interval`, and
+  `-prune-batch`.
+- Metrics: `batchjobs_jobs_pruned_total{status}`, plus
+  `batchjobs_retained_jobs{queue}` and
+  `batchjobs_oldest_retained_job_age_seconds{queue}` gauges. The gauges are
+  registered whether or not a policy is set, because the queue with no
+  policy is the one whose history grows without bound.
+
+### Changed
+
+- Listing jobs by status no longer sorts every job in that status to
+  return a page. The index added for retention, `(status, updated_at)`,
+  serves the ordering directly, and the `(status)` index it makes redundant
+  is dropped — an unused index is still maintained by every insert, claim,
+  and status transition.
+
 ## [0.1.0] - 2026-08-30
 
 The first released version. Everything below is what the public API offers
