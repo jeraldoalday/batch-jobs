@@ -219,3 +219,43 @@ func ExampleSchedule_Overdue() {
 		}
 	}
 }
+
+// Asking a server to run its retention policy now rather than at its next
+// scheduled pass -- before a migration copies the jobs table, or when the
+// disk is filling faster than the janitor's interval.
+//
+// The policy is the server's. There is nothing to send, which is what
+// keeps the endpoint from being able to delete any finished job on
+// request.
+func ExampleClient_Prune() {
+	c, err := client.New("http://localhost:8080")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	pruned, err := c.Prune(context.Background())
+	if err != nil {
+		// A server with no policy, or one whose store keeps no finished
+		// jobs, cannot do this at all.
+		if errors.Is(err, client.ErrUnsupported) {
+			log.Fatal("this server does not prune: ", err)
+		}
+		log.Fatal(err)
+	}
+
+	fmt.Printf("deleted %d records (%s); %d still held\n",
+		pruned.Total(), pruned, pruned.Retained)
+}
+
+// Pruned reports each terminal status separately, because deleting a
+// dead-lettered job means something quite different from deleting a
+// success.
+func ExamplePruned() {
+	pruned := client.Pruned{Succeeded: 1204, Cancelled: 17, Retained: 96}
+
+	fmt.Println(pruned)
+	fmt.Println("total:", pruned.Total(), "still held:", pruned.Retained)
+	// Output:
+	// succeeded=1204 cancelled=17
+	// total: 1221 still held: 96
+}
