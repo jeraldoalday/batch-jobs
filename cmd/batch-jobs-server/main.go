@@ -21,6 +21,7 @@ import (
 	"github.com/jeraldoalday/batch-jobs/internal/api"
 	"github.com/jeraldoalday/batch-jobs/internal/dashboard"
 	"github.com/jeraldoalday/batch-jobs/internal/metrics"
+	"github.com/jeraldoalday/batch-jobs/internal/queue"
 	"github.com/jeraldoalday/batch-jobs/internal/queue/sqlite"
 	"github.com/jeraldoalday/batch-jobs/internal/schedule"
 	schedulesqlite "github.com/jeraldoalday/batch-jobs/internal/schedule/sqlite"
@@ -39,6 +40,12 @@ func main() {
 	enableDashboard := flag.Bool("dashboard", true, "serve the web dashboard at /")
 	leaseTTL := flag.Duration("lease-ttl", sqlite.DefaultLeaseTTL, "how long a claimed job stays claimed without a heartbeat before it can be recovered (negative disables leasing)")
 	reapInterval := flag.Duration("reap-interval", sqlite.DefaultReapInterval, "how often to reclaim jobs whose worker died holding them (0 disables the reaper)")
+	retainSucceeded := flag.Duration("retain-succeeded", 0, "how long to keep jobs that ran cleanly (0 keeps them forever)")
+	retainFailed := flag.Duration("retain-failed", 0, "how long to keep permanently failed jobs (0 keeps them forever)")
+	retainDead := flag.Duration("retain-dead", 0, "how long to keep dead-lettered jobs (0 keeps them forever, which is the recommendation: they are work still to be done)")
+	retainCancelled := flag.Duration("retain-cancelled", 0, "how long to keep cancelled jobs (0 keeps them forever)")
+	pruneInterval := flag.Duration("prune-interval", sqlite.DefaultPruneInterval, "how often to delete finished jobs the retention flags have expired (negative leaves pruning to POST /v1/prune)")
+	pruneBatch := flag.Int("prune-batch", 0, "how many rows one prune statement deletes, bounding how long it holds the write lock (0 uses the default)")
 	enableSchedules := flag.Bool("schedules", false, "serve the /v1/schedules API and run the cron scheduler")
 	schedulesDB := flag.String("schedules-db", "", `SQLite database for schedule definitions (default: the -db path with ".schedules" before the extension)`)
 	schedulePoll := flag.Duration("schedule-poll", scheduler.DefaultPollInterval, "how often to check for schedules that have come due")
@@ -48,6 +55,18 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parseLevel(*logLevel)}))
 	slog.SetDefault(logger)
+
+	retention := queue.Retention{
+		Succeeded: *retainSucceeded,
+		Failed:    *retainFailed,
+		Dead:      *retainDead,
+		Cancelled: *retainCancelled,
+		BatchSize: *pruneBatch,
+	}
+	if err := retention.Validate(); err != nil {
+		logger.Error("invalid retention flags", "error", err)
+		os.Exit(1)
+	}
 
 	if !*autoMigrate {
 		// Deployments that migrate deliberately (with batch-jobs-migrate,
@@ -85,6 +104,30 @@ func main() {
 		logger.Warn("failed to register expired lease gauge", "error", err)
 	}
 
+	if err := m.RegisterRetainedJobs("default", func() int {
+		n, err := q.Retained()
+		if err != nil {
+			logger.Debug("failed to count retained jobs", "error", err)
+			return 0
+		}
+		return n
+	}); err != nil {
+		logger.Warn("failed to register retained jobs gauge", "error", err)
+	}
+	if err := m.RegisterOldestRetainedAge("default", func() float64 {
+		oldest, err := q.OldestRetained()
+		if err != nil {
+			logger.Debug("failed to find the oldest retained job", "error", err)
+			return 0
+		}
+		if oldest.IsZero() {
+			return 0
+		}
+		return time.Since(oldest).Seconds()
+	}); err != nil {
+		logger.Warn("failed to register oldest retained job gauge", "error", err)
+	}
+
 	var scheduleMgr *schedule.Manager
 	if *enableSchedules {
 		path := *schedulesDB
@@ -107,6 +150,7 @@ func main() {
 		Metrics:   m,
 		AuthToken: *authToken,
 		RateLimit: api.RateLimit{RPS: *rateRPS, Burst: *rateBurst},
+		Retention: retention,
 	}
 	// Left nil without -schedules, which is what makes the schedule
 	// routes answer 501 rather than pretending to work.
@@ -129,6 +173,25 @@ func main() {
 		reaper := &sqlite.Reaper{Queue: q, Interval: *reapInterval, Logger: logger, Metrics: m}
 		reaper.Start(ctx)
 		defer reaper.Stop()
+	}
+
+	// Unlike the reaper, the janitor's first pass waits out an interval:
+	// nothing about deleting old rows is urgent, and startup is when the
+	// process has the most competition for its single write lock.
+	if retention.Enabled() && *pruneInterval > 0 {
+		janitor := &sqlite.Janitor{
+			Queue:     q,
+			Retention: retention,
+			Interval:  *pruneInterval,
+			Logger:    logger,
+			Metrics:   m,
+		}
+		if err := janitor.Start(ctx); err != nil {
+			logger.Error("failed to start the janitor", "error", err)
+			os.Exit(1)
+		}
+		defer janitor.Stop()
+		logger.Info("batch-jobs-server: retention enabled", "policy", retention.String(), "interval", *pruneInterval)
 	}
 
 	if scheduleMgr != nil {
