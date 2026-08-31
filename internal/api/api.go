@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jeraldoalday/batch-jobs/internal/metrics"
+	"github.com/jeraldoalday/batch-jobs/internal/queue"
 )
 
 // DefaultListLimit is the number of jobs returned by GET /v1/jobs when the
@@ -42,6 +43,15 @@ type Server struct {
 	// asks a server without scheduling for its schedules deserves to be
 	// told that rather than given a 404 they cannot tell from a typo.
 	ScheduleStore ScheduleStore
+
+	// Retention is the policy POST /v1/prune applies. The zero value
+	// leaves the endpoint mounted and answering 501, so a caller can
+	// tell "this server does not prune" from a mistyped path.
+	//
+	// It deliberately lives here rather than in the request body: a
+	// caller free to name their own retention could delete any finished
+	// job by asking for a retention of zero.
+	Retention queue.Retention
 
 	// AuthToken, if set, is required as the X-API-Key header on every
 	// request except /healthz. Leaving it empty (the default) disables
@@ -104,6 +114,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/schedules/{id}/resume", s.handleResumeSchedule)
 	mux.HandleFunc("POST /v1/schedules/{id}/trigger", s.handleTriggerSchedule)
 	mux.HandleFunc("POST /v1/recover", s.handleRecover)
+	mux.HandleFunc("POST /v1/prune", s.handlePrune)
 	mux.HandleFunc("GET /v1/stats", s.handleStats)
 	mux.HandleFunc("GET /v1/events", s.handleEvents)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)

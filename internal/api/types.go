@@ -128,6 +128,29 @@ type RecoverResponse struct {
 	Remaining int `json:"remaining"`
 }
 
+// PruneResponse is the response body for POST /v1/prune.
+type PruneResponse struct {
+	// Succeeded is how many completed jobs were deleted.
+	Succeeded int `json:"succeeded"`
+
+	// Failed is how many permanently failed jobs were deleted.
+	Failed int `json:"failed"`
+
+	// Dead is how many dead-lettered jobs were deleted.
+	Dead int `json:"dead"`
+
+	// Cancelled is how many cancelled jobs were deleted.
+	Cancelled int `json:"cancelled"`
+
+	// Total is how many job records the pass removed altogether.
+	Total int `json:"total"`
+
+	// Retained is how many finished jobs the queue still holds after the
+	// pass. It is what tells a caller whether the history is now within
+	// policy or merely smaller than it was.
+	Retained int `json:"retained"`
+}
+
 // errorResponse is the response body for any non-2xx response.
 type errorResponse struct {
 	Error string `json:"error"`

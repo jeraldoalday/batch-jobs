@@ -596,6 +596,12 @@ func (e *Engine) APIHandler(opts ...APIOptions) http.Handler {
 		AuthToken: o.AuthToken,
 		RateLimit: api.RateLimit{RPS: o.RateLimitRPS, Burst: o.RateLimitBurst},
 	}
+	// The engine's own policy, so POST /v1/prune runs exactly what the
+	// janitor runs. An engine without one leaves the route answering
+	// 501 rather than letting a caller name a policy of their own,
+	// which would make the endpoint able to delete any finished job.
+	srv.Retention = e.cfg.Retention.internal()
+
 	// Left nil on an Engine without scheduling, which is what makes the
 	// schedule routes answer 501 rather than pretending to work.
 	if e.scheduleMgr != nil {
