@@ -139,6 +139,13 @@ if _, err := c.Enqueue(ctx, "emails", payload); err != nil {
 }
 ```
 
+Operational calls are there too: `Recover` reclaims jobs orphaned by a dead
+worker, and `Prune` runs the server's retention policy now rather than at
+its next scheduled pass. Neither takes parameters — a client free to name
+its own retention could delete every finished job on the server by asking
+for a retention of zero — and both answer `ErrUnsupported` on a server that
+does not do them.
+
 `Client.Watch` follows the server's live stats stream — the same SSE feed
 the dashboard's tiles are driven by — so a monitor does not have to poll:
 
@@ -303,6 +310,71 @@ in general.
   and calls `http.Server.Shutdown`, giving in-flight requests up to
   `-shutdown-timeout` (default 10s) to finish before the listener is forced
   closed.
+
+## Retention
+
+A durable queue does not forget anything on its own. Every job it has ever
+run is still a row in the `jobs` table, so the database grows for as long
+as the queue is used, and the indexes that make dequeue fast grow with it.
+Retention is the policy that says what may be deleted.
+
+```go
+engine, err := batchjobs.Open(batchjobs.Config{
+    DB: "jobs.db",
+    Retention: batchjobs.Retention{
+        Succeeded: 48 * time.Hour,
+        Cancelled: 48 * time.Hour,
+        Failed:    30 * 24 * time.Hour,
+        // Dead is left at zero: forever.
+    },
+    PruneInterval: time.Hour,
+})
+```
+
+The durations are per terminal status because the four mean different
+things. A succeeded job is an audit trail whose value decays in hours. A
+dead-lettered job is a *work list* — deleting one discards the only record
+that the work was ever meant to happen — which is why `Dead` stays at
+"forever" even in `DefaultRetention()`.
+
+**The zero value keeps everything**, so an existing deployment behaves
+exactly as it did until it asks for something else. A negative duration is
+rejected rather than clamped, at `Open` rather than at the first sweep: its
+two readings ("forever" and "immediately") are opposites, and a policy that
+would delete the wrong thing should stop the program starting rather than
+surface an hour later in a log line nobody is reading.
+
+- **Pruning is batched.** SQLite has a single writer, so one unbounded
+  `DELETE` would hold the write lock for as long as it took to remove the
+  whole history, and every enqueue, claim, and completion in every process
+  sharing the file would block behind it. A pass issues bounded deletes
+  (`BatchSize`, default 1000) until nothing eligible is left, giving the
+  lock up between rounds — so pruning a large backlog slows the queue
+  instead of stopping it. Each batch takes the oldest rows first.
+- **Only finished jobs are touched**, however old a pending one is, and
+  age is measured from when a job *finished* (its `updated_at`), not from
+  when it was created.
+- **`sqlite.Janitor`** runs the pass on `PruneInterval` (default 1h).
+  Unlike `sqlite.Reaper`, its first sweep waits out an interval rather than
+  running at startup: nothing about deleting month-old rows is urgent, and
+  startup is when the process has the most competition for its write lock.
+- **A fleet should prune from one place.** Several janitors against one
+  database are correct but pointless — one pass already removes everything
+  eligible, and the rest only duplicate the write-lock pressure. Set
+  `PruneInterval` negative to keep the policy and run the passes yourself,
+  via `Engine.Prune` or `POST /v1/prune`.
+
+`Engine.Retained()` and `Engine.OldestRetained()` are the two numbers that
+say whether retention is keeping up, and they say different things: the
+count can sit still while the history quietly ages past its policy, on a
+queue whose pruning stopped and which has since gone quiet.
+
+```sh
+# The same policy on the standalone server.
+go run ./cmd/batch-jobs-server -db jobs.db \
+    -retain-succeeded 48h -retain-cancelled 48h -retain-failed 720h \
+    -prune-interval 1h
+```
 
 ## Scaling
 
@@ -512,6 +584,15 @@ reporting a comfortable latency for a system in trouble.
     have lapsed but not yet been recovered, registered via
     `Metrics.RegisterExpiredLeases`; it stays above zero when a reaper has
     stopped running
+  - `batchjobs_jobs_pruned_total{status}` — finished jobs deleted by a
+    retention pass, by the terminal status they were in; a rising
+    `status="dead"` means work is being discarded before anyone looked at it
+  - `batchjobs_retained_jobs{queue}` and
+    `batchjobs_oldest_retained_job_age_seconds{queue}` — pull-based gauges
+    for the size and age of the kept history, registered via
+    `Metrics.RegisterRetainedJobs` and `Metrics.RegisterOldestRetainedAge`.
+    Both are registered whether or not a policy is set, because the queue
+    with no policy is the one whose history grows without bound
   - `batchjobs_schedule_fires_total` / `batchjobs_schedule_errors_total` —
     schedule fire outcomes
   - `batchjobs_scheduler_tick_duration_seconds` — time per scheduler poll
@@ -552,6 +633,7 @@ directly) over REST:
 | POST   | `/v1/schedules/{id}/resume`  | Re-enable it, clearing an overdue fire time |
 | POST   | `/v1/schedules/{id}/trigger` | Run it now, leaving its timetable alone |
 | POST   | `/v1/recover`           | Reclaim jobs orphaned by a dead worker (501 if the store doesn't lease) |
+| POST   | `/v1/prune`             | Delete finished jobs the server's retention policy has expired (501 if it has none) |
 | GET    | `/v1/stats`             | Job counts by status               |
 | GET    | `/v1/events`            | SSE stream of live stats           |
 | GET    | `/healthz`              | Liveness probe (never requires auth) |
@@ -582,6 +664,11 @@ go run ./cmd/batch-jobs-server -addr :8080 -db jobs.db
 Lease and recovery behaviour are flags too: `-lease-ttl` (negative disables
 leasing), `-reap-interval` (0 disables the reaper), and `-migrate=false` to
 refuse to start against a database whose schema this binary did not expect.
+Retention is flags too: `-retain-succeeded`, `-retain-failed`,
+`-retain-dead`, and `-retain-cancelled` (all zero — keep forever — by
+default), with `-prune-interval` and `-prune-batch` beside them; a negative
+`-prune-interval` keeps the policy while leaving the passes to
+`POST /v1/prune`, which is what a fleet sharing one database file wants.
 `-schedules` serves the schedule routes and runs the cron loop, with
 `-schedules-db` and `-schedule-poll` beside it; without the flag those
 routes stay mounted and answer `501`, so a client is told the server does
