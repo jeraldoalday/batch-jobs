@@ -17,6 +17,12 @@ vet:
 fmt:
 	gofmt -l .
 
+# Listed in .PHONY but never defined, so `make lint` silently did nothing
+# ("Nothing to be done for 'lint'") instead of running anything. This runs
+# the two static checks the project actually uses -- there is no separate
+# linter binary -- so the target does what its name promises.
+lint: vet fmt
+
 cover:
 	go test -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
