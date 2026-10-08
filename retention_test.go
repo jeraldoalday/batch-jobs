@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -155,7 +156,40 @@ func TestEnginePrunesOnItsOwn(t *testing.T) {
 		c.Retention = expiringNow()
 		c.PruneInterval = 5 * time.Millisecond
 	})
-	runToCompletion(t, e, 2, func(ctx context.Context, j *batchjobs.Job) error { return nil })
+
+	// The janitor's interval here is short enough to delete a finished
+	// job before runToCompletion's own Get-based poll would ever observe
+	// it as terminal -- once pruned, Get reports ErrNotFound forever, and
+	// that poll would hang until the test's deadline. Completion is
+	// signalled by the handler itself instead, which stays true whether
+	// or not the row it ran against still exists afterward.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	e.Handle("work", func(ctx context.Context, j *batchjobs.Job) error {
+		wg.Done()
+		return nil
+	})
+	if err := e.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if _, err := e.Enqueue(ctx, "work", []byte("payload")); err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for every job to run")
+	}
 
 	waitFor(t, "the janitor to clear the finished jobs", func() bool {
 		n, err := e.Retained()
