@@ -117,6 +117,29 @@ func TestRateLimitTracksClientsSeparately(t *testing.T) {
 	}
 }
 
+func TestValidToken(t *testing.T) {
+	cases := []struct {
+		name      string
+		presented string
+		want      string
+		ok        bool
+	}{
+		{"matches", "secret", "secret", true},
+		{"wrong value", "wrong", "secret", false},
+		{"shorter than want", "sec", "secret", false},
+		{"longer than want", "secretlonger", "secret", false},
+		{"empty presented", "", "secret", false},
+		{"both empty", "", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := validToken(c.presented, c.want); got != c.ok {
+				t.Errorf("validToken(%q, %q) = %v, want %v", c.presented, c.want, got, c.ok)
+			}
+		})
+	}
+}
+
 func TestClientIPFallsBackToRemoteAddr(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	r.RemoteAddr = "not-a-host-port"

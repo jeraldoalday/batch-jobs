@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"time"
 )
@@ -19,12 +20,21 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if r.Header.Get("X-API-Key") != s.AuthToken {
+		if !validToken(r.Header.Get("X-API-Key"), s.AuthToken) {
 			writeError(w, http.StatusUnauthorized, "missing or invalid API key")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// validToken reports whether presented matches want, comparing in time
+// independent of where the two first differ. A plain != leaks that
+// position through how long the comparison takes, which turns "guess the
+// key" into "guess it one byte at a time" for an attacker with enough
+// requests to average the noise out.
+func validToken(presented, want string) bool {
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(want)) == 1
 }
 
 // statusRecorder wraps an http.ResponseWriter to capture the status code
