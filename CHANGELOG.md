@@ -50,6 +50,14 @@ it.
   is dropped — an unused index is still maintained by every insert, claim,
   and status transition.
 
+### Fixed
+
+- `internal/api`: the `X-API-Key` check now compares against
+  `-auth-token` in constant time. A plain `!=` returns as soon as the two
+  strings diverge, so the comparison took less time for a guess that
+  matched more of the key's prefix -- a side channel an attacker with
+  enough requests could use to recover the key one byte at a time.
+
 ## [0.1.0] - 2026-08-30
 
 The first released version. Everything below is what the public API offers
