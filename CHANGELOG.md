@@ -57,6 +57,10 @@ it.
   strings diverge, so the comparison took less time for a guess that
   matched more of the key's prefix -- a side channel an attacker with
   enough requests could use to recover the key one byte at a time.
+- `batchjobs.Engine.EnqueueBatchJSON` now rejects `WithIdempotencyKey`
+  instead of silently applying it to every value. The option is shared
+  across the whole call, so one key collapsed every job but the first
+  into a no-op dedupe rather than doing what the caller asked.
 
 ## [0.1.0] - 2026-08-30
 

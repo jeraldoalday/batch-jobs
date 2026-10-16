@@ -3,6 +3,7 @@ package batchjobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/jeraldoalday/batch-jobs/internal/job"
@@ -80,9 +81,19 @@ func (e *Engine) EnqueueBatch(ctx context.Context, subs []Submission) ([]*Job, e
 // EnqueueBatchJSON is EnqueueBatch for the common case of a slice of
 // values that all go on the same queue with the same options.
 //
-// Options apply to every job, so an idempotency key must not be among them
-// -- one key across many jobs would collapse them all into the first.
+// Options apply to every job, so WithIdempotencyKey is rejected rather than
+// honored: one key shared across many jobs would collapse them all into
+// the first rather than deduplicating anything. Give each value its own
+// key with EnqueueBatch instead.
 func (e *Engine) EnqueueBatchJSON(ctx context.Context, name string, values []any, opts ...Option) ([]*Job, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if o.idempotencyKey != "" {
+		return nil, errors.New("batchjobs: EnqueueBatchJSON: WithIdempotencyKey applies to every value, which would collapse them all into the first; use EnqueueBatch to give each one its own key")
+	}
+
 	subs := make([]Submission, len(values))
 	for i, v := range values {
 		sub, err := JSON(name, v, opts...)

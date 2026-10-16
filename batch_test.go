@@ -204,6 +204,19 @@ func TestEngineEnqueueBatchJSON(t *testing.T) {
 	}
 }
 
+func TestEngineEnqueueBatchJSONRejectsIdempotencyKey(t *testing.T) {
+	e := batchEngine(t)
+
+	values := []any{"a", "b"}
+	_, err := e.EnqueueBatchJSON(t.Context(), "q", values, batchjobs.WithIdempotencyKey("shared"))
+	if err == nil {
+		t.Fatal("EnqueueBatchJSON with a shared idempotency key succeeded, want an error")
+	}
+	if got := e.Len(); got != 0 {
+		t.Errorf("Len() = %d, want 0: a rejected batch must not enqueue any of it", got)
+	}
+}
+
 func TestEngineEnqueueBatchJSONRejectsUnmarshalableValue(t *testing.T) {
 	e := batchEngine(t)
 
