@@ -8,6 +8,8 @@ execution, and persistence. It is designed to be embedded directly into a
 service (no external broker required) while still scaling to a durable,
 disk-backed queue when needed.
 
+> **How this project is built:** I develop this library with AI coding agents. I decide how jobs should be queued, retried, and scheduled, review each change and its tests, and merge what holds up.
+
 ## Status
 
 v0.1.0. The core queue and job model, both storage backends, cron
