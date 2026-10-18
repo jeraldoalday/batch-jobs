@@ -76,6 +76,44 @@ func TestAddScheduleTimeoutRoundsUp(t *testing.T) {
 	}
 }
 
+func TestAddScheduleJSONRoundTrip(t *testing.T) {
+	type payload struct {
+		Window string `json:"window"`
+	}
+
+	s := newStub(t)
+	c := s.client(t)
+	s.respond(http.StatusCreated, `{"id":"sched-1","queue":"reports","cron":"0 3 * * *","enabled":true}`)
+
+	want := payload{Window: "daily"}
+	if _, err := c.AddScheduleJSON(context.Background(), "reports", "0 3 * * *", want); err != nil {
+		t.Fatalf("AddScheduleJSON: %v", err)
+	}
+
+	var sent createScheduleRequest
+	if err := json.Unmarshal([]byte(lastBody(s)), &sent); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+
+	// Schedule.Decode is the worker-side mirror of AddScheduleJSON.
+	var got payload
+	if err := (&Schedule{ID: "sched-1", Payload: sent.Payload}).Decode(&got); err != nil {
+		t.Fatalf("Decode = %v", err)
+	}
+	if got != want {
+		t.Errorf("round-tripped %+v, want %+v", got, want)
+	}
+}
+
+func TestAddScheduleJSONRejectsUnmarshalablePayload(t *testing.T) {
+	s := newStub(t)
+	c := s.client(t)
+
+	if _, err := c.AddScheduleJSON(context.Background(), "reports", "0 3 * * *", make(chan int)); err == nil {
+		t.Error("AddScheduleJSON with an unencodable value = nil error, want one")
+	}
+}
+
 func TestAddScheduleValidatesLocally(t *testing.T) {
 	c, err := New("http://example.invalid")
 	if err != nil {
