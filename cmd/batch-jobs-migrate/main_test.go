@@ -263,3 +263,33 @@ func TestRunOneRejectsAnUnknownCommand(t *testing.T) {
 		t.Errorf("error %q does not mention an unknown command", err)
 	}
 }
+
+func TestBuildTargetsOmitsSchedulesWhenTheFlagIsEmpty(t *testing.T) {
+	targets, err := buildTargets("jobs.db", "")
+	if err != nil {
+		t.Fatalf("buildTargets: %v", err)
+	}
+	if len(targets) != 1 || targets[0].name != "jobs" || targets[0].path != "jobs.db" {
+		t.Errorf("targets = %+v, want a single jobs target for jobs.db", targets)
+	}
+}
+
+func TestBuildTargetsIncludesSchedulesWhenTheFlagIsSet(t *testing.T) {
+	targets, err := buildTargets("jobs.db", "schedules.db")
+	if err != nil {
+		t.Fatalf("buildTargets: %v", err)
+	}
+	if len(targets) != 2 || targets[1].name != "schedules" || targets[1].path != "schedules.db" {
+		t.Errorf("targets = %+v, want jobs then schedules targets", targets)
+	}
+}
+
+func TestBuildTargetsRejectsTheSamePathForBothStores(t *testing.T) {
+	_, err := buildTargets("shared.db", "shared.db")
+	if err == nil {
+		t.Fatal("buildTargets with -schedules-db equal to -db succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "must differ") {
+		t.Errorf("error %q does not explain that the two paths must differ", err)
+	}
+}

@@ -57,23 +57,35 @@ func main() {
 		os.Exit(2)
 	}
 
-	targets := []target{
-		{name: "jobs", path: *dbPath, fsys: queuesqlite.Migrations(), dir: queuesqlite.MigrationsDir},
-	}
-	if *schedulesPath != "" {
-		if *schedulesPath == *dbPath {
-			fail(errors.New("-schedules-db must differ from -db: the two stores number their " +
-				"migrations independently and would collide in one schema_migrations table"))
-		}
-		targets = append(targets, target{
-			name: "schedules", path: *schedulesPath,
-			fsys: schedulesqlite.Migrations(), dir: schedulesqlite.MigrationsDir,
-		})
+	targets, err := buildTargets(*dbPath, *schedulesPath)
+	if err != nil {
+		fail(err)
 	}
 
 	if err := run(flag.Arg(0), targets); err != nil {
 		fail(err)
 	}
+}
+
+// buildTargets turns the -db and -schedules-db flags into the targets a run
+// acts on, rejecting the one combination that is invalid on its face: the
+// two stores number their migrations independently, so pointing both flags
+// at the same file would collide in one schema_migrations table.
+func buildTargets(dbPath, schedulesPath string) ([]target, error) {
+	targets := []target{
+		{name: "jobs", path: dbPath, fsys: queuesqlite.Migrations(), dir: queuesqlite.MigrationsDir},
+	}
+	if schedulesPath == "" {
+		return targets, nil
+	}
+	if schedulesPath == dbPath {
+		return nil, errors.New("-schedules-db must differ from -db: the two stores number their " +
+			"migrations independently and would collide in one schema_migrations table")
+	}
+	return append(targets, target{
+		name: "schedules", path: schedulesPath,
+		fsys: schedulesqlite.Migrations(), dir: schedulesqlite.MigrationsDir,
+	}), nil
 }
 
 // run dispatches one command across every target, opening each database in
