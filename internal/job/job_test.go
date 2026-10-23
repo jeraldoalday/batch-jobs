@@ -234,3 +234,9 @@ func TestStatusValid(t *testing.T) {
 		t.Error(`Status("bogus") should not be valid`)
 	}
 }
+
+func TestStatusString(t *testing.T) {
+	if got := StatusRetrying.String(); got != "retrying" {
+		t.Errorf("String() = %q, want %q", got, "retrying")
+	}
+}
