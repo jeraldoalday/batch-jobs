@@ -203,6 +203,21 @@ func TestCeilSeconds(t *testing.T) {
 	}
 }
 
+func TestWithDelaySetsDelaySeconds(t *testing.T) {
+	var r enqueueRequest
+	WithDelay(90 * time.Second)(&r)
+	if r.DelaySeconds != 90 {
+		t.Errorf("delay_seconds = %d, want 90", r.DelaySeconds)
+	}
+
+	// Sub-second delays round up rather than down to "run now", same as
+	// ceilSeconds itself.
+	WithDelay(500 * time.Millisecond)(&r)
+	if r.DelaySeconds != 1 {
+		t.Errorf("delay_seconds = %d, want 1", r.DelaySeconds)
+	}
+}
+
 func TestListBuildsQuery(t *testing.T) {
 	s := newStub(t)
 	c := s.client(t)

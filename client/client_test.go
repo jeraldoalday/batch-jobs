@@ -156,6 +156,49 @@ func TestClientDefaultsUserAgentAndOmitsAPIKey(t *testing.T) {
 	}
 }
 
+func TestWithHTTPClientReplacesTransport(t *testing.T) {
+	custom := &http.Client{Timeout: 42 * time.Second}
+	c, err := New("http://localhost:8080", WithHTTPClient(custom))
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	if c.httpc != custom {
+		t.Error("WithHTTPClient did not install the supplied *http.Client")
+	}
+
+	// A nil client is documented to leave the default in place rather
+	// than clearing it.
+	before := c.httpc
+	c2, err := New("http://localhost:8080", WithHTTPClient(custom), WithHTTPClient(nil))
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	if c2.httpc != custom {
+		t.Error("WithHTTPClient(nil) replaced an already-configured client")
+	}
+	_ = before
+}
+
+func TestWithRequestTimeoutOverridesDefault(t *testing.T) {
+	c, err := New("http://localhost:8080", WithRequestTimeout(5*time.Second))
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	if c.httpc.Timeout != 5*time.Second {
+		t.Errorf("Timeout = %v, want 5s", c.httpc.Timeout)
+	}
+
+	// Documented to leave the existing timeout alone for a non-positive
+	// duration rather than disabling it.
+	c2, err := New("http://localhost:8080", WithRequestTimeout(5*time.Second), WithRequestTimeout(0))
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	if c2.httpc.Timeout != 5*time.Second {
+		t.Errorf("Timeout = %v, want unchanged 5s", c2.httpc.Timeout)
+	}
+}
+
 func TestClientPreservesBaseURLPath(t *testing.T) {
 	s := newStub(t)
 	c := s.client(t)
