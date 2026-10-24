@@ -115,6 +115,21 @@ func TestEnqueueDecodesJob(t *testing.T) {
 	}
 }
 
+func TestJobAttemptsLeftFloorsAtZero(t *testing.T) {
+	// A dead-lettered job has made at least as many retries as it was
+	// allowed; AttemptsLeft must not go negative once RetryCount catches
+	// up with (or, after a policy change, passes) MaxRetries.
+	for _, j := range []*Job{
+		{MaxRetries: 3, RetryCount: 3},
+		{MaxRetries: 3, RetryCount: 5},
+	} {
+		if got := j.AttemptsLeft(); got != 0 {
+			t.Errorf("AttemptsLeft() with MaxRetries=%d RetryCount=%d = %d, want 0",
+				j.MaxRetries, j.RetryCount, got)
+		}
+	}
+}
+
 func TestEnqueueResultReportsDeduplication(t *testing.T) {
 	s := newStub(t)
 	c := s.client(t)

@@ -119,8 +119,17 @@ func TestPriorityHelpers(t *testing.T) {
 		t.Error("Priority(7).Valid() = true, want false")
 	}
 
-	if got := PriorityHigh.String(); got != "high" {
-		t.Errorf("PriorityHigh.String() = %q, want high", got)
+	for _, tc := range []struct {
+		p    Priority
+		want string
+	}{
+		{PriorityLow, "low"},
+		{PriorityNormal, "normal"},
+		{PriorityHigh, "high"},
+	} {
+		if got := tc.p.String(); got != tc.want {
+			t.Errorf("%v.String() = %q, want %q", tc.p, got, tc.want)
+		}
 	}
 	if got := Priority(7).String(); !strings.Contains(got, "7") {
 		t.Errorf("Priority(7).String() = %q, want it to name the value", got)
