@@ -374,4 +374,7 @@ func TestRetentionAndPrunedValueTypes(t *testing.T) {
 	if got := p.Get(batchjobs.StatusPending); got != 0 {
 		t.Errorf("Pruned.Get(pending) = %d, want 0", got)
 	}
+	if got := p.String(); !strings.Contains(got, "succeeded=2") || !strings.Contains(got, "dead=1") {
+		t.Errorf("Pruned.String() = %q, want it to name the non-zero counts", got)
+	}
 }
