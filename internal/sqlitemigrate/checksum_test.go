@@ -74,6 +74,29 @@ func TestApplyBackfillsMissingChecksum(t *testing.T) {
 	}
 }
 
+func TestIsDuplicateColumn(t *testing.T) {
+	db := openRaw(t)
+	if _, err := db.Exec(`CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	_, err := db.Exec(`ALTER TABLE widgets ADD COLUMN name TEXT`)
+	if err == nil {
+		t.Fatal("ALTER TABLE ADD COLUMN on an existing column succeeded, want an error")
+	}
+	if !isDuplicateColumn(err) {
+		t.Errorf("isDuplicateColumn(%v) = false, want true", err)
+	}
+
+	_, err = db.Exec(`ALTER TABLE widgets ADD COLUMN`)
+	if err == nil {
+		t.Fatal("malformed ALTER TABLE succeeded, want an error")
+	}
+	if isDuplicateColumn(err) {
+		t.Errorf("isDuplicateColumn(%v) = true, want false for an unrelated error", err)
+	}
+}
+
 func TestEnsureChecksumColumnUpgradesLegacyTable(t *testing.T) {
 	db := openRaw(t)
 
