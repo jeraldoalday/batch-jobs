@@ -2,10 +2,12 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jeraldoalday/batch-jobs/internal/job"
 	"github.com/jeraldoalday/batch-jobs/internal/queue"
 	"github.com/jeraldoalday/batch-jobs/internal/schedule"
 	sqlitestore "github.com/jeraldoalday/batch-jobs/internal/schedule/sqlite"
@@ -105,6 +107,107 @@ func TestSchedulerAdvancesNextRunAtAndLastRunAt(t *testing.T) {
 
 	if !got.NextRunAt.After(time.Now().UTC()) {
 		t.Errorf("NextRunAt = %v, want a time in the future after firing", got.NextRunAt)
+	}
+}
+
+// errBoom is a sentinel error injected by the wrapper stores and queue
+// below, to exercise fire's remaining error paths without a fake that
+// duplicates a real Store or Queue's own behavior.
+var errBoom = errors.New("boom")
+
+// TestSchedulerDisablesScheduleWhenAdvanceFails covers the same Advance
+// failure as TestSchedulerRecordsMetricsForFireError (reusing its
+// corruptingStore), but asserts fire's actual effect on the schedule and
+// queue rather than the metric it also emits.
+func TestSchedulerDisablesScheduleWhenAdvanceFails(t *testing.T) {
+	store := openTestStore(t)
+	q := queue.NewMemory()
+	sch := mustDueSchedule(t, store)
+
+	s := &Scheduler{Store: &corruptingStore{Store: store}, Queue: q, PollInterval: 5 * time.Millisecond}
+	s.Start(context.Background())
+	defer s.Stop()
+
+	waitFor(t, func() bool {
+		got, err := store.Get(sch.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		return !got.Enabled
+	})
+
+	if got := q.Len(); got != 0 {
+		t.Errorf("Queue.Len() = %d, want 0 (a schedule that cannot advance should not enqueue a job)", got)
+	}
+}
+
+// failingEnqueueQueue wraps a queue.Queue and makes every Enqueue fail,
+// so a test can exercise fire's enqueue-failure path with a real queue
+// behind it.
+type failingEnqueueQueue struct {
+	queue.Queue
+}
+
+func (f *failingEnqueueQueue) Enqueue(j *job.Job) error { return errBoom }
+
+func TestSchedulerLeavesScheduleDueWhenEnqueueFails(t *testing.T) {
+	store := openTestStore(t)
+	sch := mustDueSchedule(t, store)
+	originalNext := sch.NextRunAt
+
+	s := &Scheduler{Store: store, Queue: &failingEnqueueQueue{Queue: queue.NewMemory()}, PollInterval: 5 * time.Millisecond}
+	s.Start(context.Background())
+
+	// Give the scheduler a few poll cycles to try and fail, then confirm
+	// the schedule was neither disabled nor advanced: a transient queue
+	// failure should leave it due again on the next tick, not drop it.
+	time.Sleep(50 * time.Millisecond)
+	s.Stop()
+
+	got, err := store.Get(sch.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.Enabled {
+		t.Error("Enabled = false, want true (an enqueue failure should not disable the schedule)")
+	}
+	if !got.NextRunAt.Equal(originalNext) {
+		t.Errorf("NextRunAt = %v, want unchanged %v (a failed fire should not advance it)", got.NextRunAt, originalNext)
+	}
+}
+
+// failingMarkFiredStore wraps a schedule.Store and makes every MarkFired
+// call fail, so a test can exercise fire's mark-fired-failure path
+// against a real store.
+type failingMarkFiredStore struct {
+	schedule.Store
+}
+
+func (f *failingMarkFiredStore) MarkFired(id string, firedAt, next time.Time) error {
+	return errBoom
+}
+
+func TestSchedulerLeavesScheduleDueWhenMarkFiredFails(t *testing.T) {
+	store := openTestStore(t)
+	q := queue.NewMemory()
+	sch := mustDueSchedule(t, store)
+	originalNext := sch.NextRunAt
+
+	s := &Scheduler{Store: &failingMarkFiredStore{Store: store}, Queue: q, PollInterval: 5 * time.Millisecond}
+	s.Start(context.Background())
+	defer s.Stop()
+
+	// The job still gets enqueued -- MarkFired is a separate step after
+	// Queue.Enqueue -- but a store that cannot record the fire must not
+	// silently advance the schedule in memory either.
+	waitFor(t, func() bool { return q.Len() == 1 })
+
+	got, err := store.Get(sch.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.NextRunAt.Equal(originalNext) {
+		t.Errorf("NextRunAt = %v, want unchanged %v (a failed MarkFired should leave the stored schedule due)", got.NextRunAt, originalNext)
 	}
 }
 
