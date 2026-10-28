@@ -52,6 +52,11 @@ it.
 
 ### Fixed
 
+- The dashboard's live stats connection now retries after it drops instead
+  of falling back to polling for the rest of the page's life. A deploy or
+  a brief network blip closed the `EventSource` and nothing ever tried it
+  again, so the connection badge was stuck on "polling" until the page was
+  reloaded even once the server was back.
 - `internal/api`: the `X-API-Key` check now compares against
   `-auth-token` in constant time. A plain `!=` returns as soon as the two
   strings diverge, so the comparison took less time for a guess that
