@@ -395,11 +395,39 @@
     });
   });
 
+  // SSE_RECONNECT_INTERVAL_MS is how often the polling fallback retries a
+  // live connection. A dropped EventSource (a deploy, a network blip) would
+  // otherwise downgrade the dashboard to polling for the rest of the page's
+  // life, with no way back to "live" short of a reload.
+  const SSE_RECONNECT_INTERVAL_MS = 30000;
+
+  let pollTimer = null;
+  let reconnectTimer = null;
+
   function startPollingFallback() {
     setConn("polling");
-    setInterval(() => {
-      fetchStats().catch(() => setConn("offline"));
-    }, JOBS_POLL_INTERVAL_MS);
+    if (!pollTimer) {
+      pollTimer = setInterval(() => {
+        fetchStats().catch(() => setConn("offline"));
+      }, JOBS_POLL_INTERVAL_MS);
+    }
+    if (!reconnectTimer) {
+      reconnectTimer = setInterval(connectEvents, SSE_RECONNECT_INTERVAL_MS);
+    }
+  }
+
+  // stopPollingFallback cancels the polling fallback once a live connection
+  // is back, so the dashboard isn't still polling and retrying underneath
+  // a working EventSource.
+  function stopPollingFallback() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+    if (reconnectTimer) {
+      clearInterval(reconnectTimer);
+      reconnectTimer = null;
+    }
   }
 
   function connectEvents() {
@@ -408,7 +436,10 @@
       return;
     }
     const source = new EventSource("/v1/events");
-    source.onopen = () => setConn("live");
+    source.onopen = () => {
+      setConn("live");
+      stopPollingFallback();
+    };
     source.onmessage = (event) => {
       try {
         const body = JSON.parse(event.data);
