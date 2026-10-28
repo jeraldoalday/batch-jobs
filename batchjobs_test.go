@@ -135,6 +135,34 @@ func TestEngineRunsJobs(t *testing.T) {
 	}
 }
 
+// TestStatsDerivedCounts exercises Stats's derived methods directly,
+// without an Engine, since TestEngineRunsJobs above only ever drives the
+// queue into states where Total, Backlog, and Failing stay zero.
+func TestStatsDerivedCounts(t *testing.T) {
+	stats := batchjobs.Stats{
+		batchjobs.StatusPending:   1,
+		batchjobs.StatusRunning:   2,
+		batchjobs.StatusRetrying:  4,
+		batchjobs.StatusSucceeded: 8,
+		batchjobs.StatusFailed:    16,
+		batchjobs.StatusDead:      32,
+		batchjobs.StatusCancelled: 64,
+	}
+
+	if got := stats.Total(); got != 127 {
+		t.Errorf("Total() = %d, want 127 (every status summed)", got)
+	}
+	if got := stats.Active(); got != 7 {
+		t.Errorf("Active() = %d, want 7 (pending + running + retrying)", got)
+	}
+	if got := stats.Backlog(); got != 5 {
+		t.Errorf("Backlog() = %d, want 5 (pending + retrying, running excluded)", got)
+	}
+	if got := stats.Failing(); got != 48 {
+		t.Errorf("Failing() = %d, want 48 (failed + dead)", got)
+	}
+}
+
 func TestEngineRetriesThenDeadLetters(t *testing.T) {
 	e := newEngine(t, func(c *batchjobs.Config) { c.Workers = 1 })
 
