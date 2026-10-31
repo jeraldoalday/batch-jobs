@@ -507,6 +507,9 @@ func TestEngineArgumentValidation(t *testing.T) {
 	if err := e.Cancel(ctx, ""); err == nil {
 		t.Error("Cancel with an empty ID = nil error, want one")
 	}
+	if err := e.RetryJob(ctx, ""); err == nil {
+		t.Error("RetryJob with an empty ID = nil error, want one")
+	}
 }
 
 func TestEngineRejectsCancelledContext(t *testing.T) {
@@ -525,6 +528,9 @@ func TestEngineRejectsCancelledContext(t *testing.T) {
 	}
 	if _, err := e.Stats(ctx); !errors.Is(err, context.Canceled) {
 		t.Errorf("Stats with a cancelled context = %v, want context.Canceled", err)
+	}
+	if err := e.RetryJob(ctx, "anything"); !errors.Is(err, context.Canceled) {
+		t.Errorf("RetryJob with a cancelled context = %v, want context.Canceled", err)
 	}
 }
 
