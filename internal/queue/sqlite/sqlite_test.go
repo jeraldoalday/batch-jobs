@@ -122,6 +122,25 @@ func TestSQLiteEnqueueAfterCloseFails(t *testing.T) {
 	}
 }
 
+func TestSQLiteOwnerDefaultsToHostAndPID(t *testing.T) {
+	q := openTestQueue(t)
+	if got, want := q.Owner(), defaultOwner(); got != want {
+		t.Errorf("Owner() = %q, want %q", got, want)
+	}
+}
+
+func TestSQLiteOwnerHonorsOverride(t *testing.T) {
+	q, err := Open("file:"+t.Name()+"?mode=memory&cache=shared", Options{Owner: "worker-7"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { q.Close() })
+
+	if got, want := q.Owner(), "worker-7"; got != want {
+		t.Errorf("Owner() = %q, want %q", got, want)
+	}
+}
+
 func TestSQLiteReenqueueUpdatesExistingRow(t *testing.T) {
 	q := openTestQueue(t)
 	j := job.New("q", nil, job.WithMaxRetries(1))

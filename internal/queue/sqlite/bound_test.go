@@ -75,6 +75,42 @@ func TestBoundRespectsPriorityWithinItsQueue(t *testing.T) {
 	}
 }
 
+func TestBoundLeaseTTLDelegatesToQueue(t *testing.T) {
+	q, err := Open("file:"+t.Name()+"?mode=memory&cache=shared", Options{LeaseTTL: time.Minute})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { q.Close() })
+
+	if got, want := q.Bind("emails").LeaseTTL(), q.LeaseTTL(); got != want {
+		t.Errorf("Bound.LeaseTTL() = %v, want %v (the underlying Queue's)", got, want)
+	}
+}
+
+func TestBoundHeartbeatDelegatesToQueue(t *testing.T) {
+	q, err := Open("file:"+t.Name()+"?mode=memory&cache=shared", Options{LeaseTTL: time.Minute})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { q.Close() })
+
+	emails := q.Bind("emails")
+	j := job.New("emails", nil)
+	if err := q.Enqueue(j); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if _, err := emails.TryDequeue(); err != nil {
+		t.Fatalf("TryDequeue: %v", err)
+	}
+
+	if err := emails.Heartbeat(j.ID); err != nil {
+		t.Errorf("Heartbeat: %v", err)
+	}
+	if err := emails.Heartbeat("missing"); !errors.Is(err, queue.ErrNotFound) {
+		t.Errorf("Heartbeat on an unclaimed job: err = %v, want ErrNotFound", err)
+	}
+}
+
 func TestBoundName(t *testing.T) {
 	q := openTestQueue(t)
 	if got := q.Bind("emails").Name(); got != "emails" {
