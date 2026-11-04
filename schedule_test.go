@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -597,6 +598,28 @@ func TestValidateCron(t *testing.T) {
 		if err := batchjobs.ValidateCron(expr); err == nil {
 			t.Errorf("ValidateCron(%q) = nil, want an error", expr)
 		}
+	}
+}
+
+func TestScheduleDecodeRejectsAnEmptyPayload(t *testing.T) {
+	s := &batchjobs.Schedule{ID: "sched-1"}
+
+	var v struct{}
+	err := s.Decode(&v)
+	if err == nil {
+		t.Fatal("Decode with an empty payload = nil error, want one")
+	}
+	if !strings.Contains(err.Error(), "sched-1") {
+		t.Errorf("error %q does not name the schedule, want it to", err.Error())
+	}
+}
+
+func TestScheduleDecodeWrapsAnInvalidJSONPayload(t *testing.T) {
+	s := &batchjobs.Schedule{ID: "sched-2", Payload: []byte("not json")}
+
+	var v struct{}
+	if err := s.Decode(&v); err == nil {
+		t.Fatal("Decode with an invalid JSON payload = nil error, want one")
 	}
 }
 

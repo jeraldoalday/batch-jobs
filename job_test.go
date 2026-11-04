@@ -1,6 +1,9 @@
 package batchjobs
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestStatusString(t *testing.T) {
 	if got := StatusRetrying.String(); got != "retrying" {
@@ -39,5 +42,27 @@ func TestJobAttemptsLeftFloorsAtZero(t *testing.T) {
 		if got := j.AttemptsLeft(); got != 0 {
 			t.Errorf("AttemptsLeft() with MaxRetries=%d RetryCount=%d = %d, want 0", tt.maxRetries, tt.retryCount, got)
 		}
+	}
+}
+
+func TestJobDecodeRejectsAnEmptyPayload(t *testing.T) {
+	j := &Job{ID: "job-1"}
+
+	var v struct{}
+	err := j.Decode(&v)
+	if err == nil {
+		t.Fatal("Decode with an empty payload = nil error, want one")
+	}
+	if !strings.Contains(err.Error(), "job-1") {
+		t.Errorf("error %q does not name the job, want it to", err.Error())
+	}
+}
+
+func TestJobDecodeWrapsAnInvalidJSONPayload(t *testing.T) {
+	j := &Job{ID: "job-2", Payload: []byte("not json")}
+
+	var v struct{}
+	if err := j.Decode(&v); err == nil {
+		t.Fatal("Decode with an invalid JSON payload = nil error, want one")
 	}
 }
