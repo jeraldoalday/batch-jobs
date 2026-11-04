@@ -534,6 +534,25 @@ func TestEngineRejectsCancelledContext(t *testing.T) {
 	}
 }
 
+// TestEngineRejectsNilContext pins down checkContext's other branch: a nil
+// context can't be asked ctx.Err(), so it is checked for explicitly before
+// that call rather than left to panic on whichever caller forgets to pass
+// one.
+func TestEngineRejectsNilContext(t *testing.T) {
+	e := newEngine(t)
+
+	if _, err := e.Enqueue(nil, "emails", nil); err == nil {
+		t.Error("Enqueue with a nil context = nil error, want one")
+	}
+	// Nothing was written: the same guarantee as the cancelled-context case.
+	if e.Len() != 0 {
+		t.Errorf("queue holds %d jobs after a nil-context enqueue, want 0", e.Len())
+	}
+	if _, err := e.Stats(nil); err == nil {
+		t.Error("Stats with a nil context = nil error, want one")
+	}
+}
+
 func TestEngineListByStatus(t *testing.T) {
 	e := newEngine(t)
 	ctx := context.Background()
