@@ -79,6 +79,32 @@ func TestCreateAndGetRoundTrip(t *testing.T) {
 	}
 }
 
+// A schedule's LastRunAt is normally set by MarkFired, well after Create has
+// already written the row — so a freshly created schedule's LastRunAt is
+// always the zero time, which is exactly what TestCreateAndGetRoundTrip
+// checks. Create itself does not require that, though: nothing stops a
+// caller (a restore from backup, say) from persisting a schedule that already
+// carries fire history, and insertArgs has a dedicated branch for it. This
+// exercises that branch directly, rather than relying on it only ever being
+// reached by chance.
+func TestCreateWithLastRunAtRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	want := mustNewSchedule(t)
+	want.LastRunAt = time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+
+	if err := s.Create(want); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := s.Get(want.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.LastRunAt.Equal(want.LastRunAt) {
+		t.Errorf("LastRunAt = %v, want %v", got.LastRunAt, want.LastRunAt)
+	}
+}
+
 func TestGetMissingReturnsErrNotFound(t *testing.T) {
 	s := openTestStore(t)
 	if _, err := s.Get("does-not-exist"); !errors.Is(err, schedule.ErrNotFound) {
